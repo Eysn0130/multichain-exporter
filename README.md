@@ -1,69 +1,48 @@
-# React + TypeScript + Vite
+# multichain-exporter · 多链地址批量查询与导出助手 ⚡️
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+[![Deploy](https://img.shields.io/github/actions/workflow/status/Eysn0130/multichain-exporter/deploy.yml?label=Deploy%20to%20Pages&logo=github)](https://github.com/Eysn0130/multichain-exporter/actions)
+[![Pages](https://img.shields.io/badge/GitHub%20Pages-online-2ea44f?logo=github)](https://Eysn0130.github.io/multichain-exporter/)
+![Node](https://img.shields.io/badge/Node-%E2%89%A5%2020-blue?logo=node.js)
+![Vite](https://img.shields.io/badge/Vite-7.x-646CFF?logo=vite)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
+![License](https://img.shields.io/badge/License-MIT-green)
 
-Currently, two official plugins are available:
+> 在浏览器中一站式批量查询 **以太坊 Ethereum（外部交易 / 内部交易 / ERC-20）** 与 **波场 TRON（TRC-20）** 的地址历史，并支持 Excel/CSV 导出。纯前端、无后端、开箱即用。🚀
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+**在线体验**：<https://Eysn0130.github.io/multichain-exporter/>
 
-## Expanding the ESLint configuration
+---
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## ✨ 特性
 
-```js
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+- 🧭 **多链支持**：Ethereum（Transactions / Internal / ERC-20）、TRON（TRC-20）
+- 📥 **Excel 导入模板**：一键导入地址列表，自动去重
+- 🔍 **单地址 / 批量查询**：UI 简洁直观，进度与统计实时更新
+- ✅ **地址格式校验 & 智能候选**
+  - 单地址输入与列表行均支持「自动校验」候选生成
+  - 当地址本身正确时：**按钮本体变为「地址正确」(绿色) 并禁用 2 秒**，随后自动还原（不再额外弹窗 / Badge）
+  - 输入框右侧：**即时校验图标（✔/✖，250ms 防抖）**
+- 🚦 **并发与限速可配**：并发数、QPS 上限、分页间隔、超时，内置退避与重试
+- 📤 **导出**：支持 Excel（.xlsx）与 CSV
+- 🧩 **过滤器**：ETH ERC-20 支持合约地址过滤
+- 🧰 **技术栈**：Vite 7 · React 19 · TypeScript 5 · shadcn/ui · Radix UI · TailwindCSS
 
-      // Remove tseslint.configs.recommended and replace with this
-      ...tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      ...tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      ...tseslint.configs.stylisticTypeChecked,
+---
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## 🖼️ 界面预览
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+> 将你的截图放到 `docs/` 并在此处引用：
+>
+> ![Home](docs/screenshot-home.png)
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+---
 
-export default tseslint.config([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## 🏁 快速开始（本地开发）
+
+> 需要 **Node.js ≥ 20** 与 **npm**。
+
+```bash
+git clone https://github.com/Eysn0130/multichain-exporter.git
+cd multichain-exporter
+npm i
+npm run dev

@@ -19,21 +19,14 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
-
-      - name: Install deps
-        run: npm ci
-
-      - name: Build
-        run: npm run build
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+          cache: npm
+      - run: npm ci
+      # 用我们在 package.json 加的新脚本：不跑 tsc，只跑 vite，并开启 GH_PAGES
+      - run: npm run build:pages
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: dist
 

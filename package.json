@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:pages": "cross-env GH_PAGES=true vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
@@ -43,6 +44,7 @@
     "tailwindcss": "^3.4.17",
     "typescript": "~5.8.3",
     "typescript-eslint": "^8.39.1",
-    "vite": "^7.1.2"
+    "vite": "^7.1.2",
+    "cross-env": "^7.0.3"
   }
 }

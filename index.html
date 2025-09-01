@@ -1,13 +1,20 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/vite.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Vite + React + TS</title>
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0"
+    />
+    <meta name="application-name" content="multichain-exporter" />
+    <meta name="apple-mobile-web-app-title" content="multichain-exporter" />
+    <title>multichain-exporter</title>
+    <!-- 可选：favicon 放在 public/ 或根目录，路径按 base 配置走 -->
+    <link rel="icon" href="/multichain-exporter/favicon.ico" />
   </head>
   <body>
     <div id="root"></div>
+    <!-- 这一行非常关键：Vite 会在构建时替换成带哈希的 /multichain-exporter/assets/*.js -->
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

@@ -121,9 +121,101 @@ function ValidatedInput(props: {
 /* ========================================================= */
 
 export default function TronView() {
+  // ============== USDT 合约常量与类型 ==============
+  const USDT_CONTRACT = "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t"; // TRC20 USDT
+
+  type AccountStatRow = {
+    地址: string;
+    标签: string;
+    余额USDT: string; // 原始（导出用）
+    首次交易时间: string;
+    最近交易时间: string;
+    最近流出时间: string;
+    流入金额USDT: string; // 原始字符串
+    流入笔数: number;
+    流入地址数: number;
+    流出金额USDT: string; // 原始字符串
+    流出笔数: number;
+    流出地址数: number;
+  };
+
+  // ========= 展示层工具（仅前端渲染，导出不变） =========
+  function middleEllipsisFixed(s: string, head = 7, tail = 6) {
+    if (!s) return "";
+    if (s.length <= head + tail) return s;
+    return `${s.slice(0, head)}...${s.slice(-tail)}`;
+  }
+  /** 展示层金额格式化（保留两位小数 + 万/亿），导出不变 */
+  function formatHumanAmount2(raw: string | number): string {
+    const n = Number(raw ?? 0);
+    if (!Number.isFinite(n)) return String(raw ?? "");
+    const sign = n < 0 ? "-" : "";
+    const abs = Math.abs(n);
+    if (abs >= 1e8) return `${sign}${(abs / 1e8).toFixed(2)}亿`;
+    if (abs >= 1e4) return `${sign}${(abs / 1e4).toFixed(2)}万`;
+    return `${sign}${abs.toFixed(2)}`;
+  }
+  /** 时间单元：日期/时间分行 & 居中（导出不变） */
+  function TimeCell({ value }: { value: string }) {
+    if (!value || value === "-") return <div className="text-center">-</div>;
+    const [d, t] = String(value).split(" ");
+    return (
+      <div className="text-center leading-tight">
+        <div>{d || value}</div>
+        {t ? <div>{t}</div> : null}
+      </div>
+    );
+  }
+  /** 地址单元（账户情况用）：前7后6 + 悬浮完整 + 可复制（横排气泡） */
+  function AddressCell({ addr }: { addr: string }) {
+    const [open, setOpen] = useState(false);
+    const [copied, setCopied] = useState(false);
+    const copyAddr = async () => {
+      try {
+        await navigator.clipboard.writeText(addr);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+      } catch {}
+    };
+    return (
+      <div
+        className="relative inline-block"
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => { setOpen(false); setCopied(false); }}
+      >
+        <span className="font-mono text-xs">{middleEllipsisFixed(addr, 7, 6)}</span>
+        {open && (
+          <div className="absolute left-1/2 -translate-x-1/2 z-30" style={{ top: "115%" }}>
+            <div className="rounded-md border bg-white shadow-lg px-2 py-1 flex items-center gap-2 whitespace-nowrap max-w-[520px]">
+              <span className="font-mono text-xs">{addr}</span>
+              <button
+                onClick={copyAddr}
+                className={`ml-1 h-6 w-6 inline-flex items-center justify-center rounded-md ${copied ? "bg-emerald-500 text-white" : "hover:bg-neutral-100"}`}
+                title="复制地址"
+              >
+                {copied ? (
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <path d="M20 6L9 17l-5-5" strokeWidth="2" />
+                  </svg>
+                ) : (
+                  <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                    <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                    <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                  </svg>
+                )}
+              </button>
+              {copied ? <span className="text-xs text-emerald-600">已复制</span> : null}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   // 队列与数据
   const [addresses, setAddresses] = useState<string[]>([]);
-  const [rows, setRows] = useState<any[]>([]);
+  const [rows, setRows] = useState<any[]>([]);          // Transfers（保持原有）
+  const [txRows, setTxRows] = useState<any[]>([]);      // Transactions（新增）
   const [errors, setErrors] = useState<{ address: string; message: string }[]>([]);
   const [errorAlertVisible, setErrorAlertVisible] = useState(false);
   const errorTimerRef = useRef<number | null>(null);
@@ -157,6 +249,12 @@ export default function TronView() {
   // 自动校验按钮 2s 成功态
   const [inputAutoOK, setInputAutoOK] = useState(false);
   const [rowAutoOK, setRowAutoOK] = useState<Record<string, boolean>>({});
+
+  // 账户情况（USDT）
+  const [acctStats, setAcctStats] = useState<AccountStatRow[]>([]);
+  const [acctStatStatus, setAcctStatStatus] = useState<Record<string, AddrState>>({});
+  const [acctStatErrors, setAcctStatErrors] = useState<{ address: string; message: string }[]>([]);
+  const [isAcctRunning, setIsAcctRunning] = useState(false);
 
   const runningCount = useMemo(
     () => Object.values(addrStatus).filter((s) => s?.status === "running").length,
@@ -246,27 +344,52 @@ export default function TronView() {
     // 批量异步校验
     void validateMany(uniq);
     setRows([]);
+    setTxRows([]);
     setErrors([]);
-  }
-  function downloadExcel(): void {
-    const wb = XLSX.utils.book_new();
-    const ws1 = XLSX.utils.json_to_sheet(rows);
-    XLSX.utils.book_append_sheet(wb, ws1, "查询结果");
-    if (errors.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(errors), "错误信息");
-    XLSX.writeFile(wb, `TRON_查询结果_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.xlsx`);
-  }
-  function downloadCSV(): void {
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const csv = XLSX.utils.sheet_to_csv(ws);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `TRON_查询结果_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    // 清空账户情况
+    clearAcctStats();
   }
 
-  // TRON 请求（游标分页：links.next / fingerprint）
+  // === 导出：Excel（两个 sheet：转账Transfers / 交易Transactions） ===
+  function downloadExcel(): void {
+    const wb = XLSX.utils.book_new();
+
+    const wsTransfers = XLSX.utils.json_to_sheet(rows);
+    XLSX.utils.book_append_sheet(wb, wsTransfers, "转账Transfers");
+
+    const wsTx = XLSX.utils.json_to_sheet(txRows);
+    XLSX.utils.book_append_sheet(wb, wsTx, "交易Transactions");
+
+    XLSX.writeFile(
+      wb,
+      `TRON_查询结果_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.xlsx`
+    );
+  }
+
+  // === 导出：CSV（分别触发两个文件下载） ===
+  function downloadCSV(): void {
+    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+
+    const ws1 = XLSX.utils.json_to_sheet(rows);
+    const csv1 = XLSX.utils.sheet_to_csv(ws1);
+    const blob1 = new Blob([csv1], { type: "text/csv;charset=utf-8;" });
+    const a1 = document.createElement("a");
+    a1.href = URL.createObjectURL(blob1);
+    a1.download = `TRON_查询结果_转账Transfers_${ts}.csv`;
+    a1.click();
+    URL.revokeObjectURL(a1.href);
+
+    const ws2 = XLSX.utils.json_to_sheet(txRows);
+    const csv2 = XLSX.utils.sheet_to_csv(ws2);
+    const blob2 = new Blob([csv2], { type: "text/csv;charset=utf-8;" });
+    const a2 = document.createElement("a");
+    a2.href = URL.createObjectURL(blob2);
+    a2.download = `TRON_查询结果_交易Transactions_${ts}.csv`;
+    a2.click();
+    URL.revokeObjectURL(a2.href);
+  }
+
+  // ========== TRC20 转账（保持原逻辑） ==========
   async function fetchTrc20ForAddress(addr: string): Promise<any[]> {
     const base = `${endpoint.replace(/\/$/, "")}/v1/accounts/${addr}/transactions/trc20`;
     const rowsOut: any[] = [];
@@ -400,7 +523,6 @@ export default function TronView() {
         url.searchParams.set("limit", "200");
         url.searchParams.set("order_by", "block_timestamp,desc");
         url.searchParams.set("search_internal", "false");
-        url.searchParams.set("fingerprint", fingerprint);
         if (contract.trim()) url.searchParams.set("contract_address", contract.trim());
         nextURL = url.toString();
       } else {
@@ -416,13 +538,335 @@ export default function TronView() {
     return rowsOut;
   }
 
-  // 批量 / 单地址 控制
+  // ========== 新增：账户“交易（Transactions）” ==========
+  async function fetchTransactionsForAddress(addr: string): Promise<any[]> {
+    const base = `${endpoint.replace(/\/$/, "")}/v1/accounts/${addr}/transactions`;
+    const listOut: any[] = [];
+    const seenTx = new Set<string>();
+    let nextURL: string | null = `${base}?${new URLSearchParams({
+      only_confirmed: "true",
+      limit: "200",
+      order_by: "block_timestamp,desc",
+    }).toString()}`;
+
+    const toAbs = (u: string) =>
+      /^https?:\/\//i.test(u) ? u : `${endpoint.replace(/\/$/, "")}${u.startsWith("/") ? u : "/" + u}`;
+
+    while (!cancelRef.current.cancelled && nextURL) {
+      const key = pick(apiKeys) || "";
+      if (!key) {
+        setNeedApiKey(true);
+        const msg = "请输入有效的 API Key";
+        setErrors((prev) => (prev.some((e) => e.message === msg) ? prev : [...prev, { address: addr, message: msg }]));
+        break;
+      }
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      let resp: Response | null = null;
+
+      try {
+        await acquireToken();
+        resp = await fetch(nextURL, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            "TRON-PRO-API-KEY": key,
+            "User-Agent": "Mozilla/5.0",
+          },
+          signal: ctrl.signal,
+        });
+      } catch {
+        clearTimeout(timer);
+        await sleep(600);
+        continue;
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!resp.ok) {
+        const retryAfter = Number(resp.headers.get("retry-after"));
+        if ([429, 403, 500, 502, 503, 504].includes(resp.status)) {
+          let wait = 1200;
+          if (Number.isFinite(retryAfter) && retryAfter !== 0) wait = Math.max(1000, retryAfter * 1000);
+          else if (resp.status === 403) wait = Math.max(wait, 30000);
+          await sleep(wait);
+          continue;
+        }
+        const msg = `TX ${resp.status} ${resp.statusText}`;
+        setErrors((es) => [...es, { address: addr, message: msg }]);
+        break;
+      }
+
+      let json: any = null;
+      try {
+        json = await resp.json();
+      } catch {
+        await sleep(300);
+        continue;
+      }
+
+      const data: any[] = Array.isArray(json?.data) ? json.data : [];
+      if (!data.length) break;
+
+      for (const it of data) {
+        const txid: string = String(it?.txID || it?.transaction_id || "");
+        if (!txid || seenTx.has(txid)) continue;
+        seenTx.add(txid);
+
+        const ts = Number(it?.block_timestamp || 0);
+        const ret = it?.ret?.[0]?.contractRet || "";
+        const c0 = it?.raw_data?.contract?.[0] || {};
+        const type: string =
+          String(c0?.type || "") ||
+          String(c0?.parameter?.type_url || "").split(".").pop() ||
+          "";
+
+        const val = c0?.parameter?.value || {};
+        let from = val?.owner_address || "";
+        let to = val?.to_address || val?.contract_address || "";
+        let amountSun: string | number | undefined =
+          val?.amount ?? val?.call_value ?? undefined;
+        const amountTrx = amountSun != null ? scaleAmount(String(amountSun), 6) : "";
+
+        listOut.push({
+          地址: addr,
+          哈希: txid,
+          类型: type,
+          发起地址: from,
+          接收地址: to,
+          金额TRX: amountTrx,
+          状态: ret || "",
+          时间: ts ? formatTime(ts) : "",
+        });
+      }
+
+      const nextLink: string | undefined = json?.meta?.links?.next;
+      const fingerprint: string | undefined = json?.meta?.fingerprint;
+      if (nextLink) nextURL = toAbs(nextLink);
+      else if (fingerprint) {
+        const url = new URL(base);
+        url.searchParams.set("only_confirmed", "true");
+        url.searchParams.set("limit", "200");
+        url.searchParams.set("order_by", "block_timestamp,desc");
+        url.searchParams.set("fingerprint", fingerprint);
+        nextURL = url.toString();
+      } else {
+        nextURL = null;
+      }
+
+      await sleep(pauseMs);
+    }
+
+    return listOut;
+  }
+
+  // ===== 格式化 USDT（BigInt 累计 → 字符串），用于账户情况内部计算 =====
+  function formatUsdtFromRaw(raw: bigint, decimals = 6): string {
+    const base = BigInt(10) ** BigInt(decimals);
+    const sign = raw < 0n ? "-" : "";
+    const abs = raw < 0n ? -raw : raw;
+    const intPart = abs / base;
+    const fracPart = abs % base;
+    const fracStr = fracPart.toString().padStart(decimals, "0").replace(/0+$/, "");
+    return `${sign}${intPart.toString()}${fracStr ? "." + fracStr : ""}`;
+  }
+
+  // ===== TRONSCAN 标签获取（尽力而为）=====
+  async function fetchTronscanTag(addr: string): Promise<string> {
+    const url = `https://apilist.tronscanapi.com/api/account/tag?address=${addr}`;
+    try {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 8000);
+      const resp = await fetch(url, { signal: ctrl.signal });
+      clearTimeout(timer);
+      if (!resp.ok) return "";
+      const data = await resp.json();
+      if (Array.isArray(data?.tags) && data.tags.length) return String(data.tags[0]);
+      if (Array.isArray(data?.data) && data.data.length) {
+        const t = data.data[0];
+        return String(t?.tag || t?.name || "");
+      }
+      if (typeof data?.data === "object" && data?.data) {
+        return String(data.data?.tag || data.data?.name || "");
+      }
+      return "";
+    } catch {
+      return "";
+    }
+  }
+
+  // ===== 聚合 USDT 账户情况（TronGrid 分页） =====
+  async function fetchUsdtAccountStat(addr: string): Promise<AccountStatRow> {
+    const base = `${endpoint.replace(/\/$/, "")}/v1/accounts/${addr}/transactions/trc20`;
+    const qs = new URLSearchParams({
+      only_confirmed: "true",
+      limit: "200",
+      order_by: "block_timestamp,desc",
+      search_internal: "false",
+      contract_address: USDT_CONTRACT,
+    });
+
+    const toAbs = (u: string) =>
+      /^https?:\/\//i.test(u) ? u : `${endpoint.replace(/\/$/, "")}${u.startsWith("/") ? u : "/" + u}`;
+    let nextURL: string | null = `${base}?${qs.toString()}`;
+
+    let decimals = 6;
+    let inRaw = 0n,
+      outRaw = 0n;
+    let inCount = 0,
+      outCount = 0;
+    const inAddrSet = new Set<string>();
+    const outAddrSet = new Set<string>();
+    let tsMin = Number.POSITIVE_INFINITY;
+    let tsMax = 0;
+    let lastOutTs = 0;
+
+    setAcctStatStatus((prev) => ({ ...prev, [addr]: "running" as AddrState }));
+
+    while (!cancelRef.current.cancelled && nextURL) {
+      const key = pick(apiKeys) || "";
+      if (!key) {
+        setNeedApiKey(true);
+        const msg = "请输入有效的 API Key";
+        setAcctStatErrors((es) => (es.some((x) => x.message === msg) ? es : [...es, { address: addr, message: msg }]));
+        setAcctStatStatus((prev) => ({ ...prev, [addr]: "error" }));
+        break;
+      }
+
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      let resp: Response | null = null;
+
+      try {
+        await acquireToken();
+        resp = await fetch(nextURL, {
+          method: "GET",
+          headers: {
+            "Content-Type": "application/json",
+            "TRON-PRO-API-KEY": key,
+            "User-Agent": "Mozilla/5.0",
+          },
+          signal: ctrl.signal,
+        });
+      } catch {
+        clearTimeout(timer);
+        await sleep(600);
+        continue;
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!resp.ok) {
+        const retryAfter = Number(resp.headers.get("retry-after"));
+        if ([429, 403, 500, 502, 503, 504].includes(resp.status)) {
+          let wait = 1200;
+          if (Number.isFinite(retryAfter) && retryAfter !== 0) wait = Math.max(1000, retryAfter * 1000);
+          else if (resp.status === 403) wait = Math.max(wait, 30000);
+          await sleep(wait);
+          continue;
+        }
+        const msg = `${resp.status} ${resp.statusText}`;
+        setAcctStatErrors((es) => [...es, { address: addr, message: msg }]);
+        setAcctStatStatus((prev) => ({ ...prev, [addr]: "error" }));
+        break;
+      }
+
+      let json: any = null;
+      try {
+        json = await resp.json();
+      } catch {
+        await sleep(300);
+        continue;
+      }
+
+      const list: any[] = Array.isArray(json?.data) ? json.data : [];
+      if (!list.length) break;
+
+      for (const it of list) {
+        if (it?.type === "Approval") continue;
+        const ti = it?.token_info || {};
+        if (typeof ti?.decimals === "number") decimals = ti.decimals;
+        const ts = Number(it?.block_timestamp || 0);
+        if (ts > 0) {
+          if (ts < tsMin) tsMin = ts;
+          if (ts > tsMax) tsMax = ts;
+        }
+        const from = it?.from || "";
+        const to = it?.to || "";
+        const valRaw = BigInt(String(it?.value ?? "0"));
+        if (to === addr) {
+          inRaw += valRaw;
+          inCount += 1;
+          if (from) inAddrSet.add(from);
+        }
+        if (from === addr) {
+          outRaw += valRaw;
+          outCount += 1;
+          if (to) outAddrSet.add(to);
+          if (ts > lastOutTs) lastOutTs = ts;
+        }
+      }
+
+      const nextLink: string | undefined = json?.meta?.links?.next;
+      const fingerprint: string | undefined = json?.meta?.fingerprint;
+      if (nextLink) nextURL = toAbs(nextLink);
+      else if (fingerprint) {
+        const url = new URL(base);
+        url.searchParams.set("only_confirmed", "true");
+        url.searchParams.set("limit", "200");
+        url.searchParams.set("order_by", "block_timestamp,desc");
+        url.searchParams.set("search_internal", "false");
+        url.searchParams.set("contract_address", USDT_CONTRACT);
+        url.searchParams.set("fingerprint", fingerprint);
+        nextURL = url.toString();
+      } else {
+        nextURL = null;
+      }
+    }
+
+    const tag = await fetchTronscanTag(addr).catch(() => "");
+
+    const balanceRaw = inRaw - outRaw;
+    const row: AccountStatRow = {
+      地址: addr,
+      标签: tag || "",
+      余额USDT: formatUsdtFromRaw(balanceRaw, decimals),
+      首次交易时间: Number.isFinite(tsMin) ? formatTime(tsMin) : "-",
+      最近交易时间: tsMax > 0 ? formatTime(tsMax) : "-",
+      最近流出时间: lastOutTs > 0 ? formatTime(lastOutTs) : "-",
+      流入金额USDT: formatUsdtFromRaw(inRaw, decimals),
+      流入笔数: inCount,
+      流入地址数: inAddrSet.size,
+      流出金额USDT: formatUsdtFromRaw(outRaw, decimals),
+      流出笔数: outCount,
+      流出地址数: outAddrSet.size,
+    };
+
+    setAcctStatStatus((prev) => ({ ...prev, [addr]: "done" as AddrState }));
+    return row;
+  }
+
+  // 批量 / 单地址 控制（自动触发账户情况 + 交易）
   async function runAll(): Promise<void> {
     if (!addresses.length) return;
+
+    // 账户情况：准备状态
+    setIsAcctRunning(true);
+    clearAcctStats();
+    setAcctStatStatus((prev) => {
+      const n: Record<string, AddrState> = { ...prev };
+      addresses.forEach((a) => (n[a] = "pending"));
+      return n;
+    });
+
     setIsRunning(true);
     cancelRef.current.cancelled = false;
+
+    // ✅ 批量前覆盖旧“查询结果”
     setRows([]);
+    setTxRows([]);
     setErrors([]);
+
     let cursor = 0;
 
     const worker = async () => {
@@ -431,18 +875,30 @@ export default function TronView() {
         if (i >= addresses.length) return;
         const addr = addresses[i];
         try {
+          // 1) 转账（TRC20）
           const part = await fetchTrc20ForAddress(addr);
-          setRows((prev) => [...prev, ...part]);
+          setRows((prev) => [...prev.filter((r) => r.地址 !== addr), ...part]);
           setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "done", count: part.length } }));
+
+          // 2) 账户情况（USDT）
+          const statRow = await fetchUsdtAccountStat(addr);
+          setAcctStats((prev) => [...prev.filter((x) => x.地址 !== addr), statRow]);
+
+          // 3) 交易（Transactions）
+          const txPart = await fetchTransactionsForAddress(addr);
+          setTxRows((prev) => [...prev.filter((r) => r.地址 !== addr), ...txPart]);
         } catch (e: any) {
           setErrors((es) => [...es, { address: addr, message: e?.message || "未知错误" }]);
           setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "error", message: String(e || "") } }));
+          setAcctStatErrors((es) => [...es, { address: addr, message: e?.message || "未知错误" }]);
+          setAcctStatStatus((prev) => ({ ...prev, [addr]: "error" }));
         }
       }
     };
     const workers = Array.from({ length: Math.max(1, concurrency) }, () => worker());
     await Promise.all(workers);
     setIsRunning(false);
+    setIsAcctRunning(false);
   }
 
   async function runOne(): Promise<void> {
@@ -469,15 +925,35 @@ export default function TronView() {
     });
 
     setIsRunning(true);
+    // 单地址触发前：清理该地址相关旧数据（覆盖模式）
+    setIsAcctRunning(true);
+    setAcctStatStatus((prev) => ({ ...prev, [addr]: "pending" }));
+    setAcctStats((prev) => prev.filter((r) => r.地址 !== addr));
+    setAcctStatErrors((prev) => prev.filter((e) => e.address !== addr));
+    setRows((prev) => prev.filter((r) => r.地址 !== addr));
+    setTxRows((prev) => prev.filter((r) => r.地址 !== addr));
+
     try {
+      // 1) 转账（TRC20）
       const part = await fetchTrc20ForAddress(addr);
-      setRows((prev) => [...prev, ...part]);
+      setRows((prev) => [...prev.filter((r) => r.地址 !== addr), ...part]);
       setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "done", count: part.length } }));
+
+      // 2) 账户情况（USDT）
+      const statRow = await fetchUsdtAccountStat(addr);
+      setAcctStats((prev) => [...prev.filter((x) => x.地址 !== addr), statRow]);
+
+      // 3) 交易（Transactions）
+      const txPart = await fetchTransactionsForAddress(addr);
+      setTxRows((prev) => [...prev.filter((r) => r.地址 !== addr), ...txPart]);
     } catch (e: any) {
       setErrors((es) => [...es, { address: addr, message: e?.message || "未知错误" }]);
       setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "error", message: String(e || "") } }));
+      setAcctStatErrors((es) => [...es, { address: addr, message: e?.message || "未知错误" }]);
+      setAcctStatStatus((prev) => ({ ...prev, [addr]: "error" }));
     } finally {
       setIsRunning(false);
+      setIsAcctRunning(false);
     }
   }
 
@@ -500,10 +976,12 @@ export default function TronView() {
   function stopAll(): void {
     cancelRef.current.cancelled = true;
     setIsRunning(false);
+    setIsAcctRunning(false);
   }
   function clearAll(): void {
     setAddresses([]);
     setRows([]);
+    setTxRows([]);
     setErrors([]);
     setAddrStatus({});
     setValidMap({});
@@ -514,6 +992,7 @@ export default function TronView() {
     cancelRef.current.cancelled = false;
     setNeedApiKey(false);
     setErrorAlertVisible(false);
+    clearAcctStats();
     if (errorTimerRef.current) {
       clearTimeout(errorTimerRef.current);
       errorTimerRef.current = null;
@@ -533,6 +1012,15 @@ export default function TronView() {
       const { [addr]: _c, ...r } = prev as any;
       return r as any;
     });
+    // 清掉该地址账户情况 & 查询数据
+    setAcctStats((prev) => prev.filter((r) => r.地址 !== addr));
+    setAcctStatErrors((prev) => prev.filter((e) => e.address !== addr));
+    setAcctStatStatus((prev) => {
+      const { [addr]: _rm, ...rest } = prev as any;
+      return rest as any;
+    });
+    setRows((prev) => prev.filter((r) => r.地址 !== addr));
+    setTxRows((prev) => prev.filter((r) => r.地址 !== addr));
   }
   function replaceAddress(oldAddr: string, newAddr: string): void {
     if (!oldAddr || !newAddr || oldAddr === newAddr) return;
@@ -558,6 +1046,15 @@ export default function TronView() {
       delete n[newAddr];
       return n;
     });
+    // 迁移/清理各表
+    setAcctStats((prev) => prev.filter((r) => r.地址 !== oldAddr));
+    setAcctStatErrors((prev) => prev.filter((e) => e.address !== oldAddr));
+    setAcctStatStatus((prev) => {
+      const { [oldAddr]: oldS, ...rest } = prev as any;
+      return { ...rest, [newAddr]: oldS || "pending" } as any;
+    });
+    setRows((prev) => prev.filter((r) => r.地址 !== oldAddr));
+    setTxRows((prev) => prev.filter((r) => r.地址 !== oldAddr));
   }
 
   async function validateMany(addrs: string[]) {
@@ -575,7 +1072,6 @@ export default function TronView() {
     if (!val) return;
     const candidates = await generateTronCandidates(val, 120);
 
-    // 本身已正确：按钮 2s 变“地址正确”，不展开候选
     if (candidates.length > 0 && candidates[0] === val) {
       setInputAutoOK(true);
       setTimeout(() => setInputAutoOK(false), 2000);
@@ -595,12 +1091,9 @@ export default function TronView() {
   // 自动校验（候选）—— 行
   async function autoSuggestForRow(addr: string) {
     const cands = await generateTronCandidates(addr, 120);
-
-    // 本身正确：按钮 2s 成功，不显示“未找到候选…”
     if (cands.length > 0 && cands[0] === addr) {
       setRowAutoOK((prev) => ({ ...prev, [addr]: true }));
       setTimeout(() => setRowAutoOK((prev) => ({ ...prev, [addr]: false })), 2000);
-      // ⭐ 删除 key，而不是设成 []，否则会显示“未找到候选…”
       setRowCandidates((prev) => {
         const n = { ...prev };
         delete n[addr];
@@ -608,8 +1101,72 @@ export default function TronView() {
       });
       return;
     }
-
     setRowCandidates((prev) => ({ ...prev, [addr]: cands }));
+  }
+
+  // 账户情况：独立按钮（保留）
+  async function runAcctStats(): Promise<void> {
+    if (!addresses.length) return;
+    if (apiKeys.length === 0) {
+      setNeedApiKey(true);
+      const msg = "请输入有效的 API Key";
+      setAcctStatErrors((es) => (es.some((x) => x.message === msg) ? es : [...es, { address: "", message: msg }]));
+      return;
+    }
+    setIsAcctRunning(true);
+    cancelRef.current.cancelled = false;
+    // 覆盖旧统计
+    setAcctStats([]);
+    setAcctStatErrors([]);
+    setAcctStatStatus((prev) => {
+      const next: Record<string, AddrState> = { ...prev };
+      addresses.forEach((a) => (next[a] = "pending"));
+      return next;
+    });
+
+    let idx = 0;
+    const worker = async () => {
+      while (!cancelRef.current.cancelled) {
+        const i = idx++;
+        if (i >= addresses.length) return;
+        const a = addresses[i];
+        try {
+          const row = await fetchUsdtAccountStat(a);
+          // 覆盖该地址旧统计
+          setAcctStats((prev) => [...prev.filter((x) => x.地址 !== a), row]);
+        } catch (e: any) {
+          setAcctStatErrors((es) => [...es, { address: a, message: e?.message || "未知错误" }]);
+          setAcctStatStatus((prev) => ({ ...prev, [a]: "error" as AddrState }));
+        }
+      }
+    };
+    const workers = Array.from({ length: Math.max(1, concurrency) }, () => worker());
+    await Promise.all(workers);
+    setIsAcctRunning(false);
+  }
+
+  function clearAcctStats(): void {
+    setAcctStats([]);
+    setAcctStatErrors([]);
+    setAcctStatStatus({});
+  }
+
+  function downloadAcctExcel(): void {
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(acctStats), "账户情况USDT");
+    if (acctStatErrors.length)
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(acctStatErrors), "账户情况错误");
+    XLSX.writeFile(wb, `TRON_账户情况USDT_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.xlsx`);
+  }
+  function downloadAcctCSV(): void {
+    const ws = XLSX.utils.json_to_sheet(acctStats);
+    const csv = XLSX.utils.sheet_to_csv(ws);
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `TRON_账户情况USDT_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   }
 
   // 状态徽章
@@ -926,7 +1483,7 @@ export default function TronView() {
                 <Button
                   variant="outline"
                   className="rounded-2xl hover:ring-1 hover:ring-neutral-300"
-                  disabled={!(allDone && rows.length > 0)}
+                  disabled={!(allDone && (rows.length > 0 || txRows.length > 0))}
                   onClick={downloadExcel}
                 >
                   <Download className="mr-2 h-4 w-4" />
@@ -935,11 +1492,11 @@ export default function TronView() {
                 <Button
                   variant="outline"
                   className="rounded-2xl hover:ring-1 hover:ring-neutral-300"
-                  disabled={!(allDone && rows.length > 0)}
+                  disabled={!(allDone && (rows.length > 0 || txRows.length > 0))}
                   onClick={downloadCSV}
                 >
                   <Download className="mr-2 h-4 w-4" />
-                  导出 CSV
+                  导出 CSV（2个文件）
                 </Button>
               </div>
 
@@ -966,7 +1523,7 @@ export default function TronView() {
                     const st = addrStatus[a] || { status: "pending", count: 0, pages: 0 };
                     const v = validMap[a] || "checking";
                     const raw = rowCandidates[a];
-                    const hasTried = typeof raw !== "undefined"; // 只有“尝试过且无结果”时才显示未找到候选
+                    const hasTried = typeof raw !== "undefined";
                     const cands = Array.isArray(raw) ? raw : [];
                     const ok2s = !!rowAutoOK[a];
                     return (
@@ -1101,41 +1658,249 @@ export default function TronView() {
             </CardContent>
           </Card>
 
-          {/* 底部：查询结果 */}
-          <Card className="rounded-2xl shadow-sm mt-6">
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <CardTitle className="text-base font-semibold">查询结果（{rows.length} 条）</CardTitle>
-                <span className="text-sm text-muted-foreground">· 预览首 1000 条</span>
-              </div>
+          {/* ========== 账户情况（USDT） ========== */}
+          <Card className="rounded-2xl shadow-md border border-neutral-200/60 bg-white/80 mt-6">
+            <CardHeader className="pb-3 flex flex-row items-center gap-2">
+              <FileSpreadsheet className="h-5 w-5" />
+              <CardTitle className="text-base font-semibold">账户情况（USDT）</CardTitle>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-3">
+              <div className="flex flex-wrap gap-3">
+                {!isAcctRunning ? (
+                  <Button
+                    className="rounded-2xl bg-gradient-to-r from-indigo-600 to-fuchsia-600 text-white hover:from-indigo-500 hover:to-fuchsia-500"
+                    disabled={!addresses.length}
+                    onClick={() => void runAcctStats()}
+                    title="按当前地址列表统计 USDT（TronGrid 分页聚合）"
+                  >
+                    <Play className="mr-2 h-4 w-4" />
+                    统计账户情况（USDT）
+                  </Button>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    className="rounded-2xl bg-neutral-900 text-white hover:bg-neutral-800"
+                    onClick={stopAll}
+                    title="终止任务（与上方停止共享同一取消标志）"
+                  >
+                    <Square className="mr-2 h-4 w-4" />
+                    停止
+                  </Button>
+                )}
+                <Button variant="outline" className="rounded-2xl hover:ring-1 hover:ring-neutral-300" onClick={clearAcctStats}>
+                  <Trash2 className="mr-2 h-4 w-4" />
+                  清空
+                </Button>
+                <Button
+                  variant="outline"
+                  className="rounded-2xl hover:ring-1 hover:ring-neutral-300"
+                  disabled={acctStats.length === 0}
+                  onClick={downloadAcctExcel}
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  导出 Excel
+                </Button>
+                <Button
+                  variant="outline"
+                  className="rounded-2xl hover:ring-1 hover:ring-neutral-300"
+                  disabled={acctStats.length === 0}
+                  onClick={downloadAcctCSV}
+                >
+                  <Download className="mr-2 h-4 w-4" />
+                  导出 CSV
+                </Button>
+              </div>
+
+              {/* 统计进度小结 */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                <Stat label="账户统计条数" value={acctStats.length} />
+                <Stat
+                  label="正在统计"
+                  value={Object.values(acctStatStatus).filter((s) => s === "running").length}
+                />
+                <Stat
+                  label="已完成"
+                  value={Object.values(acctStatStatus).filter((s) => s === "done").length}
+                />
+                <Stat label="错误" value={acctStatErrors.length} />
+              </div>
+
+              {/* 表格 */}
               <div className="overflow-auto max-h-[520px] rounded-2xl border">
                 <table className="min-w-full text-sm">
                   <thead className="sticky top-0 bg-neutral-50 backdrop-blur">
                     <tr>
-                      {["地址", "哈希", "转入地址", "转出地址", "数量", "代币", "时间"].map((h) => (
-                        <th key={h} className="text-left p-2 whitespace-nowrap">
-                          {h}
-                        </th>
+                      {[
+                        "地址",
+                        "标签",
+                        "余额(USDT)",
+                        "首次交易时间",
+                        "最近交易时间",
+                        "最近流出时间",
+                        "流入金额(USDT)",
+                        "流入笔数",
+                        "流入地址数",
+                        "流出金额(USDT)",
+                        "流出笔数",
+                        "流出地址数",
+                      ].map((h) => (
+                        <th key={h} className="text-left p-2 whitespace-nowrap">{h}</th>
                       ))}
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.slice(0, 1000).map((r, i) => (
-                      <tr key={i} className="border-b last:border-none">
-                        <td className="p-2 font-mono text-xs break-all">{r.地址}</td>
-                        <td className="p-2 font-mono text-xs break-all">{r.哈希}</td>
-                        <td className="p-2 font-mono text-xs break-all">{r.转入地址}</td>
-                        <td className="p-2 font-mono text-xs break-all">{r.转出地址}</td>
-                        <td className="p-2">{r.数量}</td>
-                        <td className="p-2">{r.代币}</td>
-                        <td className="p-2">{r.时间}</td>
+                    {acctStats.map((r, i) => (
+                      <tr key={r.地址 + i} className="border-b last:border-none">
+                        {/* 地址：省略显示 + 悬浮完整 + 复制 */}
+                        <td className="p-2">
+                          <AddressCell addr={r.地址} />
+                        </td>
+                        <td className="p-2">{r.标签 || "-"}</td>
+                        {/* 金额：万/亿，两位小数（展示层） */}
+                        <td className="p-2">{formatHumanAmount2(r.余额USDT)}</td>
+                        {/* 时间：换行居中（展示层） */}
+                        <td className="p-2"><TimeCell value={r.首次交易时间} /></td>
+                        <td className="p-2"><TimeCell value={r.最近交易时间} /></td>
+                        <td className="p-2"><TimeCell value={r.最近流出时间} /></td>
+                        {/* 金额/计数 */}
+                        <td className="p-2">{formatHumanAmount2(r.流入金额USDT)}</td>
+                        <td className="p-2">{r.流入笔数}</td>
+                        <td className="p-2">{r.流入地址数}</td>
+                        <td className="p-2">{formatHumanAmount2(r.流出金额USDT)}</td>
+                        <td className="p-2">{r.流出笔数}</td>
+                        <td className="p-2">{r.流出地址数}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
+
+              {/* 错误面板（账户情况） */}
+              {acctStatErrors.length > 0 && (
+                <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50/70 p-3">
+                  <div className="text-sm font-medium text-rose-700">账户情况错误（{acctStatErrors.length}）</div>
+                  <div className="mt-2 max-h-40 overflow-auto space-y-1">
+                    {acctStatErrors.map((e, i) => {
+                      const full = e.address ? `${e.address} — ${e.message}` : e.message;
+                      return (
+                        <div key={i} className="flex items-start justify-between gap-2 py-0.5">
+                          <div className="text-xs text-rose-700/90 break-all">
+                            {e.address ? (
+                              <>
+                                <span className="font-mono">{middleEllipsis(e.address)}</span> — {e.message}
+                              </>
+                            ) : (
+                              e.message
+                            )}
+                          </div>
+                          <button
+                            className="h-6 w-6 inline-flex items-center justify-center rounded-md hover:bg-rose-100 text-rose-700"
+                            onClick={() => navigator.clipboard.writeText(full)}
+                            title="复制错误"
+                          >
+                            <svg className="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+                              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                            </svg>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* 底部：查询结果（Tabs：转账 / 交易） */}
+          <Card className="rounded-2xl shadow-sm mt-6">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-2">
+                <CardTitle className="text-base font-semibold">查询结果</CardTitle>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <Tabs defaultValue="transfers" className="w-full">
+                <TabsList className="rounded-2xl bg-neutral-100/60 p-1 flex gap-2 mb-3">
+                  <TabsTrigger
+                    value="transfers"
+                    className="rounded-xl border bg-white text-neutral-800 data-[state=active]:bg-gradient-to-r data-[state=active]:from-indigo-600 data-[state=active]:to-fuchsia-600 data-[state=active]:text-white data-[state=active]:border-transparent"
+                  >
+                    转账 Transfers（{rows.length}）
+                  </TabsTrigger>
+                  <TabsTrigger
+                    value="transactions"
+                    className="rounded-xl border bg-white text-neutral-800 data-[state=active]:bg-gradient-to-r data-[state=active]:from-indigo-600 data-[state=active]:to-fuchsia-600 data-[state=active]:text-white data-[state=active]:border-transparent"
+                  >
+                    交易 Transactions（{txRows.length}）
+                  </TabsTrigger>
+                </TabsList>
+
+                {/* Transfers 表 */}
+                <TabsContent value="transfers">
+                  <div className="overflow-auto max-h-[520px] rounded-2xl border">
+                    <table className="min-w-full text-sm">
+                      <thead className="sticky top-0 bg-neutral-50 backdrop-blur">
+                        <tr>
+                          <th className="text-left p-2 whitespace-nowrap">地址</th>
+                          <th className="text-left p-2 whitespace-nowrap w-[200px]">哈希</th>
+                          <th className="text-left p-2 whitespace-nowrap">转入地址</th>
+                          <th className="text-left p-2 whitespace-nowrap">转出地址</th>
+                          <th className="text-left p-2 whitespace-nowrap">数量</th>
+                          <th className="text-left p-2 whitespace-nowrap">代币</th>
+                          <th className="text-left p-2 whitespace-nowrap w-[140px]">时间</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.slice(0, 1000).map((r, i) => (
+                          <tr key={i} className="border-b last:border-none">
+                            <td className="p-2 font-mono text-xs break-all">{r.地址}</td>
+                            <td className="p-2 font-mono text-xs break-all w-[200px]">{r.哈希}</td>
+                            <td className="p-2 font-mono text-xs break-all">{r.转入地址}</td>
+                            <td className="p-2 font-mono text-xs break-all">{r.转出地址}</td>
+                            {/* 数量：展示层万/亿+两位小数，导出不变 */}
+                            <td className="p-2">{formatHumanAmount2(r.数量)}</td>
+                            <td className="p-2">{r.代币}</td>
+                            {/* 时间：展示层换行居中，列更宽 */}
+                            <td className="p-2 w-[140px]"><TimeCell value={r.时间} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </TabsContent>
+
+                {/* Transactions 表 */}
+                <TabsContent value="transactions">
+                  <div className="overflow-auto max-h-[520px] rounded-2xl border">
+                    <table className="min-w-full text-sm">
+                      <thead className="sticky top-0 bg-neutral-50 backdrop-blur">
+                        <tr>
+                          {["地址", "哈希", "类型", "发起地址", "接收地址", "金额(TRX)", "状态", "时间"].map((h) => (
+                            <th key={h} className="text-left p-2 whitespace-nowrap">
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {txRows.slice(0, 1000).map((r, i) => (
+                          <tr key={i} className="border-b last:border-none">
+                            <td className="p-2 font-mono text-xs break-all">{r.地址}</td>
+                            <td className="p-2 font-mono text-xs break-all">{r.哈希}</td>
+                            <td className="p-2 whitespace-nowrap">{r.类型 || "-"}</td>
+                            <td className="p-2 font-mono text-xs break-all">{r.发起地址 || "-"}</td>
+                            <td className="p-2 font-mono text-xs break-all">{r.接收地址 || "-"}</td>
+                            <td className="p-2">{r.金额TRX ? formatHumanAmount2(r.金额TRX) : "-"}</td>
+                            <td className="p-2 whitespace-nowrap">{r.状态 || "-"}</td>
+                            <td className="p-2"><TimeCell value={r.时间 || "-"} /></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </TabsContent>
+              </Tabs>
             </CardContent>
           </Card>
         </CardContent>

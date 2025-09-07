@@ -9,15 +9,70 @@ import { Network, CircuitBoard, KeyRound, BookOpen, HelpCircle, X, Sparkles } fr
 import { motion } from "framer-motion";
 
 /**
- * 应用外壳（高级视觉版本）
- * - 玻璃拟态 Header：渐变高亮线、柔光氛围、网格纹理
- * - 主体容器：渐变描边 + 玻璃卡片 + 粘性 TabBar
- * - Tabs：卡片化分段器（主/副标题分层、左侧彩色图标块、激活态渐变+发光底纹）
- * - 业务组件 TronView / EthView 保持不变
+ * AppShell（含移动端 50% 缩放自适应）
+ * - 自动检测手机浏览器：iOS/Android UA、coarse pointer + 小屏宽度
+ * - 移动端开启 50% 缩放（双保险）：
+ *   1) 动态设置 <meta name="viewport" initial-scale=0.5>（优先）
+ *   2) 为容器应用 CSS zoom: 0.5（fallback），并保留桌面端 100%
+ * - 同时保留此前的高级视觉样式与 Tabs 美化
  */
 export default function AppShell() {
   const [showHint, setShowHint] = React.useState(true);
   const [tab, setTab] = React.useState<"tron" | "eth">("tron");
+  const [isMobile, setIsMobile] = React.useState(false);
+  const originalViewportRef = React.useRef<string | null>(null);
+
+  // —— 设备检测：手机浏览器即判定为移动端
+  const detectMobile = React.useCallback(() => {
+    if (typeof window === "undefined") return false;
+    const ua = (navigator.userAgent || navigator.vendor || "").toLowerCase();
+    const isPhoneUA = /iphone|ipod|android.*mobile|windows phone|blackberry/.test(ua);
+    const isPadUA = /ipad|android(?!.*mobile)/.test(ua); // 平板也可按需缩放，这里默认不缩放
+    const coarse = window.matchMedia?.("(pointer:coarse)").matches ?? false;
+    const small = window.matchMedia?.("(max-width: 768px)").matches ?? window.innerWidth <= 768;
+    // 只对“手机”生效：UA 命中手机 或（粗指针+小屏）
+    return isPhoneUA || (!isPadUA && coarse && small);
+  }, []);
+
+  // —— 首次与窗口/方向变化时重新判定
+  React.useEffect(() => {
+    const recompute = () => setIsMobile(detectMobile());
+    recompute();
+    window.addEventListener("resize", recompute);
+    window.addEventListener("orientationchange", recompute);
+    return () => {
+      window.removeEventListener("resize", recompute);
+      window.removeEventListener("orientationchange", recompute);
+    };
+  }, [detectMobile]);
+
+  // —— 根据 isMobile 动态设置 viewport（并保存/恢复原值）
+  React.useEffect(() => {
+    const ensureViewport = () => {
+      let meta = document.querySelector('meta[name="viewport"]') as HTMLMetaElement | null;
+      if (!meta) {
+        meta = document.createElement("meta");
+        meta.name = "viewport";
+        document.head.appendChild(meta);
+      }
+      return meta;
+    };
+
+    const meta = ensureViewport();
+    if (isMobile) {
+      if (originalViewportRef.current === null) {
+        originalViewportRef.current = meta.getAttribute("content") || "width=device-width, initial-scale=1";
+      }
+      // 50% 缩放，锁定缩放，避免双指误放大
+      meta.setAttribute(
+        "content",
+        "width=device-width, initial-scale=0.5, maximum-scale=0.5, user-scalable=no, viewport-fit=cover"
+      );
+    } else if (originalViewportRef.current !== null) {
+      meta.setAttribute("content", originalViewportRef.current);
+      originalViewportRef.current = null;
+    }
+  }, [isMobile]);
 
   const chainBadge = (
     <div className="inline-flex items-center gap-2 rounded-xl border border-neutral-200 bg-white/80 px-3 py-1 text-xs text-neutral-700 shadow-sm">
@@ -44,8 +99,19 @@ export default function AppShell() {
     </div>
   );
 
+  // —— Fallback：为整个页面根容器施加 CSS zoom: 0.5（部分浏览器不支持 viewport 缩放时仍生效）
+  const rootScaleStyle = isMobile
+    ? ({
+        zoom: 0.5, // 大多数移动浏览器可生效（非标准）
+      } as React.CSSProperties)
+    : undefined;
+
   return (
-    <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-neutral-50 via-neutral-50 to-neutral-100">
+    <div
+      className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-neutral-50 via-neutral-50 to-neutral-100"
+      style={rootScaleStyle}
+      data-mobile={isMobile ? "true" : "false"}
+    >
       {/* ===== 顶部 ===== */}
       <header className="relative w-full border-b border-neutral-200/60 bg-white/70 backdrop-blur supports-[backdrop-filter]:bg-white/50 overflow-hidden">
         {/* 顶部渐变高亮线 */}
@@ -139,16 +205,10 @@ export default function AppShell() {
                     申请 TronGrid Key
                   </a>
                 </Button>
-                <Button asChild variant="outline" className="h-8 rounded-xl text-xs">
-                  <a href="#usage" rel="noreferrer">
-                    <BookOpen className="mr-1.5 h-3.5 w-3.5" />
-                    使用说明
-                  </a>
-                </Button>
                 <Button asChild variant="secondary" className="h-8 rounded-xl text-xs bg-neutral-900 text-white hover:bg-neutral-800">
                   <a href="#help" rel="noreferrer">
                     <HelpCircle className="mr-1.5 h-3.5 w-3.5" />
-                    帮助
+                    使用说明
                   </a>
                 </Button>
               </div>
@@ -209,7 +269,7 @@ export default function AppShell() {
                 <div className="sticky top-4 z-20">
                   <div className="flex items-center justify-center">
                     <Tabs value={tab} onValueChange={(v) => setTab(v as "tron" | "eth")} className="w-full">
-                      {/* ===== 改过样式的 TabsList / TabsTrigger ===== */}
+                      {/* TabsList / TabsTrigger（卡片化） */}
                       <TabsList
                         className="
                           grid w-full max-w-2xl grid-cols-1 sm:grid-cols-2 gap-2
@@ -227,7 +287,6 @@ export default function AppShell() {
                             data-[state=active]:text-white data-[state=active]:shadow-md data-[state=active]:border-transparent
                           "
                         >
-                          {/* 激活态渐变底色 */}
                           <div
                             className="
                               pointer-events-none absolute inset-0 opacity-0
@@ -235,7 +294,6 @@ export default function AppShell() {
                               bg-gradient-to-r from-indigo-600 via-fuchsia-600 to-sky-600
                             "
                           />
-                          {/* 发光底纹 */}
                           <div
                             className="
                               pointer-events-none absolute -bottom-3 left-6 right-6 h-8 rounded-full
@@ -243,9 +301,7 @@ export default function AppShell() {
                               bg-white/35
                             "
                           />
-                          {/* 内容 */}
                           <div className="relative flex items-center gap-3">
-                            {/* 左侧图标块 */}
                             <span
                               className="
                                 inline-flex h-9 w-9 items-center justify-center rounded-lg
@@ -258,28 +314,14 @@ export default function AppShell() {
                                 <path d="M3.2 3.5l17.2 3.6-8.8 13.5L3.2 3.5z" fill="currentColor" opacity=".95" />
                               </svg>
                             </span>
-
-                            {/* 文字区 */}
                             <span className="min-w-0">
-                              <span
-                                className="
-                                  block text-[15px] font-semibold leading-tight text-neutral-900
-                                  group-data-[state=active]:text-white
-                                "
-                              >
+                              <span className="block text-[15px] font-semibold leading-tight text-neutral-900 group-data-[state=active]:text-white">
                                 波场链
                               </span>
-                              <span
-                                className="
-                                  mt-0.5 block text-[11px] leading-none tracking-wide text-neutral-500
-                                  group-data-[state=active]:text-white/90
-                                "
-                              >
+                              <span className="mt-0.5 block text-[11px] leading-none tracking-wide text-neutral-500 group-data-[state=active]:text-white/90">
                                 TRON · TRC20
                               </span>
                             </span>
-
-                            {/* 右侧小徽章 */}
                             <span
                               className="
                                 ml-auto hidden sm:inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]
@@ -303,7 +345,6 @@ export default function AppShell() {
                             data-[state=active]:text-white data-[state=active]:shadow-md data-[state=active]:border-transparent
                           "
                         >
-                          {/* 激活态渐变底色 */}
                           <div
                             className="
                               pointer-events-none absolute inset-0 opacity-0
@@ -311,7 +352,6 @@ export default function AppShell() {
                               bg-gradient-to-r from-indigo-600 via-fuchsia-600 to-sky-600
                             "
                           />
-                          {/* 发光底纹 */}
                           <div
                             className="
                               pointer-events-none absolute -bottom-3 left-6 right-6 h-8 rounded-full
@@ -319,9 +359,7 @@ export default function AppShell() {
                               bg-white/35
                             "
                           />
-                          {/* 内容 */}
                           <div className="relative flex items-center gap-3">
-                            {/* 左侧图标块 */}
                             <span
                               className="
                                 inline-flex h-9 w-9 items-center justify-center rounded-lg
@@ -335,28 +373,14 @@ export default function AppShell() {
                                 <path d="M12 22l6.5-9.6L12 14.5 5.5 12.4 12 22z" fill="currentColor" opacity=".55" />
                               </svg>
                             </span>
-
-                            {/* 文字区 */}
                             <span className="min-w-0">
-                              <span
-                                className="
-                                  block text-[15px] font-semibold leading-tight text-neutral-900
-                                  group-data-[state=active]:text-white
-                                "
-                              >
+                              <span className="block text-[15px] font-semibold leading-tight text-neutral-900 group-data-[state=active]:text-white">
                                 以太坊
                               </span>
-                              <span
-                                className="
-                                  mt-0.5 block text-[11px] leading-none tracking-wide text-neutral-500
-                                  group-data-[state=active]:text-white/90
-                                "
-                              >
+                              <span className="mt-0.5 block text-[11px] leading-none tracking-wide text-neutral-500 group-data-[state=active]:text-white/90">
                                 Ethereum · ERC-20/交易
                               </span>
                             </span>
-
-                            {/* 右侧小徽章 */}
                             <span
                               className="
                                 ml-auto hidden sm:inline-flex items-center rounded-full border px-2 py-0.5 text-[11px]

@@ -16,6 +16,7 @@ import {
   Wand2,
   CheckCircle2,
   XCircle,
+  Copy,
 } from "lucide-react";
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -42,18 +43,127 @@ import {
 type AddrState = "pending" | "running" | "done" | "error";
 type ValidState = "unknown" | "checking" | "valid" | "invalid";
 
+/* =========================
+ * 本组件内的展示工具（不改 utils.ts）
+ * ========================= */
+function splitTimeToLines(s: string): { date: string; time: string } {
+  if (!s) return { date: "-", time: "" };
+  const [date, time] = s.split(" ");
+  return { date: date || "-", time: time || "" };
+}
+
+// 金额格式：保留2位，按 亿/万 显示（仅前端展示）
+function toHumanWanYi(num: number): { v: number; unit: "" | "万" | "亿" } {
+  if (!isFinite(num)) return { v: 0, unit: "" };
+  const abs = Math.abs(num);
+  if (abs >= 1e8) return { v: num / 1e8, unit: "亿" };
+  if (abs >= 1e4) return { v: num / 1e4, unit: "万" };
+  return { v: num, unit: "" };
+}
+function fmt2(v: number): string {
+  return (Math.round(v * 100) / 100).toFixed(2);
+}
+function formatHumanAmount2(raw: string | number): string {
+  const n = typeof raw === "number" ? raw : Number(raw || 0);
+  const { v, unit } = toHumanWanYi(n);
+  return `${fmt2(v)}${unit}`;
+}
+
+const DEFAULT_USDT_ON_ETH = "0xdAC17F958D2ee523a2206206994597C13D831ec7";
+
+/* =========================
+ * 账户情况类型
+ * ========================= */
+type AccountStat = {
+  address: string;
+  label?: string;
+  balanceToken: string; // 余额(按选中ERC20，默认USDT)
+  firstTxTime?: string;
+  lastTxTime?: string;
+  lastOutTime?: string;
+  inAmount: string;
+  inCount: number;
+  inAddrCount: number;
+  outAmount: string;
+  outCount: number;
+  outAddrCount: number;
+};
+
+/* =========================
+ * 小组件：时间换行+居中
+ * ========================= */
+function TimeCell({ value }: { value: string }) {
+  const { date, time } = splitTimeToLines(value || "");
+  return (
+    <div className="flex flex-col items-center justify-center leading-tight text-xs">
+      <div>{date}</div>
+      <div>{time}</div>
+    </div>
+  );
+}
+
+/* =========================
+ * 小组件：地址省略 + 悬浮显示完整 + 复制
+ * ========================= */
+function AddressHoverEllipsis({
+  address,
+  head = 7,
+  tail = 6,
+}: {
+  address: string;
+  head?: number;
+  tail?: number;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div
+      className="relative inline-block group"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+    >
+      <span className="font-mono">{middleEllipsis(address, head, tail)}</span>
+      {open && (
+        <div className="absolute z-20 left-0 top-full mt-1 rounded-md border bg-white shadow-lg px-2 py-1 flex items-center gap-2 whitespace-nowrap">
+          <span className="font-mono text-xs">{address}</span>
+          <button
+            className="inline-flex items-center gap-1 text-xs rounded px-1.5 py-0.5 border hover:bg-neutral-50"
+            onClick={(e) => {
+              e.stopPropagation();
+              navigator.clipboard.writeText(address);
+            }}
+            title="复制地址"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            复制
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function EthView() {
   // 队列 & 数据
   const [addresses, setAddresses] = useState<string[]>([]);
-  const [rows, setRows] = useState<any[]>([]);
+  // —— 查询结果拆分：All / Transactions / Internal / Token Transfers —— //
+  const [rowsAll, setRowsAll] = useState<any[]>([]);
+  const [rowsNormal, setRowsNormal] = useState<any[]>([]);
+  const [rowsInternal, setRowsInternal] = useState<any[]>([]);
+  const [rowsERC20, setRowsERC20] = useState<any[]>([]);
+
+  // —— 账户情况 —— //
+  const [acctStats, setAcctStats] = useState<Record<string, AccountStat>>({});
+
+  // 错误
   const [errors, setErrors] = useState<{ address: string; message: string }[]>([]);
   const [errorAlertVisible, setErrorAlertVisible] = useState(false);
   const errorTimerRef = useRef<number | null>(null);
 
   // 参数
   const [endpoint, setEndpoint] = useState("https://api.etherscan.io");
-  const [contract, setContract] = useState("");
-  const [concurrency, setConcurrency] = useState(3);
+  const [contract, setContract] = useState(""); // 若留空 → 结果收集不限制；账户情况用默认 USDT
+  const [concurrency, setConcurrency] = useState(2);
   const [timeoutMs, setTimeoutMs] = useState(15000);
   const [pauseMs, setPauseMs] = useState(220);
   const [qpsMax, setQpsMax] = useState(5);
@@ -187,25 +297,51 @@ export default function EthView() {
     setValidMap(vm);
     // 批量异步校验
     void validateMany(uniq);
-    setRows([]);
+    // 覆盖式：清空旧数据
+    clearResultsOnly();
     setErrors([]);
   }
+
+  function clearResultsOnly() {
+    setRowsAll([]);
+    setRowsNormal([]);
+    setRowsInternal([]);
+    setRowsERC20([]);
+    setAcctStats({});
+  }
+
   function downloadExcel(): void {
     const wb = XLSX.utils.book_new();
-    const ws1 = XLSX.utils.json_to_sheet(rows);
-    XLSX.utils.book_append_sheet(wb, ws1, "查询结果");
+    const wsAll = XLSX.utils.json_to_sheet(rowsAll);
+    const wsN = XLSX.utils.json_to_sheet(rowsNormal);
+    const wsI = XLSX.utils.json_to_sheet(rowsInternal);
+    const wsT = XLSX.utils.json_to_sheet(rowsERC20);
+    XLSX.utils.book_append_sheet(wb, wsAll, "All");
+    XLSX.utils.book_append_sheet(wb, wsN, "Transactions");
+    XLSX.utils.book_append_sheet(wb, wsI, "Internal");
+    XLSX.utils.book_append_sheet(wb, wsT, "Token Transfers");
     if (errors.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(errors), "错误信息");
     XLSX.writeFile(wb, `ETH_查询结果_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.xlsx`);
   }
+
   function downloadCSV(): void {
-    const ws = XLSX.utils.json_to_sheet(rows);
-    const csv = XLSX.utils.sheet_to_csv(ws);
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `ETH_查询结果_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
-    a.click();
-    URL.revokeObjectURL(a.href);
+    // 分别导出四个 CSV
+    const items: { name: string; data: any[] }[] = [
+      { name: "All", data: rowsAll },
+      { name: "Transactions", data: rowsNormal },
+      { name: "Internal", data: rowsInternal },
+      { name: "TokenTransfers", data: rowsERC20 },
+    ];
+    for (const it of items) {
+      const ws = XLSX.utils.json_to_sheet(it.data);
+      const csv = XLSX.utils.sheet_to_csv(ws);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `ETH_${it.name}_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
   }
 
   // —— Etherscan 请求助手 —— //
@@ -262,16 +398,77 @@ export default function EthView() {
     };
   }
 
-  // —— 三类分页抓取（升序、复合去重、限速退避） —— //
+  // —— 公共：入库（覆盖式由 run* 控制；这里仍是追加到各自数组） —— //
+  function pushRowsNormal(addr: string, added: any[]) {
+    if (!added.length) return;
+    setRowsNormal((prev) => [...prev, ...added]);
+    setRowsAll((prev) => [...prev, ...added]);
+    setAddrStatus((prev) => ({
+      ...prev,
+      [addr]: { ...prev[addr], count: (prev[addr]?.count || 0) + added.length },
+    }));
+  }
+  function pushRowsInternal(addr: string, added: any[]) {
+    if (!added.length) return;
+    setRowsInternal((prev) => [...prev, ...added]);
+    setRowsAll((prev) => [...prev, ...added]);
+    setAddrStatus((prev) => ({
+      ...prev,
+      [addr]: { ...prev[addr], count: (prev[addr]?.count || 0) + added.length },
+    }));
+  }
+  function pushRowsERC20(addr: string, added: any[]) {
+    if (!added.length) return;
+    setRowsERC20((prev) => [...prev, ...added]);
+    setRowsAll((prev) => [...prev, ...added]);
+    setAddrStatus((prev) => ({
+      ...prev,
+      [addr]: { ...prev[addr], count: (prev[addr]?.count || 0) + added.length },
+    }));
+  }
+
+  // —— 账户情况：基于选中ERC20（默认USDT）统计 —— //
+  function mergeAcctStat(addr: string, patch: Partial<AccountStat>) {
+    setAcctStats((prev) => {
+      const old = prev[addr] || {
+        address: addr,
+        balanceToken: "0",
+        firstTxTime: undefined,
+        lastTxTime: undefined,
+        lastOutTime: undefined,
+        inAmount: "0",
+        inCount: 0,
+        inAddrCount: 0,
+        outAmount: "0",
+        outCount: 0,
+        outAddrCount: 0,
+      };
+      const next: AccountStat = { ...old, ...patch, address: addr };
+      return { ...prev, [addr]: next };
+    });
+  }
+
+  // —— ERC20：按“区块游标”分页 —— //
   async function fetchErc20ForAddress(addr: string): Promise<any[]> {
     const rowsOut: any[] = [];
     const seen = new Set<string>();
-    let page = 1;
     const offset = 10000;
-    const updateStatus = (patch: Partial<{ status: any; count: number; pages: number; message?: string }>) => {
-      setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], ...patch } }));
-    };
-    updateStatus({ status: "running" });
+    let startBlock = 0;
+    const endBlock = 99999999;
+    let safetyNoProgress = 0;
+
+    const updateStatus = (patch: any) => setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], ...patch } }));
+    updateStatus({ status: "running", pages: 0, count: 0 });
+
+    // 账户统计合约选择（若未填合约 → 默认 USDT）
+    const accTokenContract = (contract && contract.trim()) || DEFAULT_USDT_ON_ETH;
+    let inSum = 0;
+    let outSum = 0;
+    const inAddr = new Set<string>();
+    const outAddr = new Set<string>();
+    let firstTs: number | undefined;
+    let lastTs: number | undefined;
+    let lastOutTs: number | undefined;
 
     while (!cancelRef.current.cancelled) {
       const key = pick(apiKeys) || "";
@@ -283,17 +480,19 @@ export default function EthView() {
         updateStatus({ status: "error", message: "" });
         break;
       }
+
       const params: Record<string, string> = {
         module: "account",
         action: "tokentx",
         address: addr,
-        startblock: "0",
-        endblock: "99999999",
+        startblock: String(startBlock),
+        endblock: String(endBlock),
         sort: "asc",
-        page: String(page),
+        page: "1",
         offset: String(offset),
         apikey: key,
       };
+      // 结果收集：若你在“参数”里填了合约，则只取该合约；否则取全部ERC-20（便于 All/TokenTransfers 展示更完整）
       if (contract.trim()) params["contractaddress"] = contract.trim();
 
       const { ok, status, message, result, errorText } = await etherscanRequest(params);
@@ -309,23 +508,24 @@ export default function EthView() {
       }
       if (String(status) === "0") {
         if (/No transactions found/i.test(message)) {
-          updateStatus({ status: "done", pages: page - 1, count: rowsOut.length });
+          updateStatus({ status: "done" });
           break;
         }
         if (/Max rate|rate limit|limit reached|busy|throttle/i.test(combo)) {
           await sleep(1500);
           continue;
         }
-        setErrors((es) => [...es, { address: addr, message }]);
+        setErrors((es) => [...es, { address: addr, message: message || "查询失败" }]);
         updateStatus({ status: "error", message });
         break;
       }
 
-      if (!result.length) {
-        updateStatus({ status: "done", pages: page - 1, count: rowsOut.length });
+      if (!Array.isArray(result) || result.length === 0) {
+        updateStatus({ status: "done" });
         break;
       }
 
+      let newAdded = 0;
       for (const it of result) {
         const id = String(it?.hash || "");
         const from = String(it?.from || "");
@@ -334,6 +534,7 @@ export default function EthView() {
         const dec = Number(it?.tokenDecimal || 0) || 0;
         const symbol = String(it?.tokenSymbol || "");
         const ts = Number(it?.timeStamp ? Number(it.timeStamp) * 1000 : 0);
+        const tokenAddr = String(it?.contractAddress || "");
         const compKey = makeCompositeKey({
           transaction_id: id,
           from,
@@ -342,41 +543,93 @@ export default function EthView() {
           decimals: dec,
           symbol,
           block_timestamp: ts,
-          token_address: String(it?.contractAddress || ""),
+          token_address: tokenAddr,
         });
         if (!seen.has(compKey)) {
           seen.add(compKey);
+          const scaled = scaleAmount(rawVal, dec);
           rowsOut.push({
             地址: addr,
             哈希: id,
             转入地址: from,
             转出地址: to,
-            数量: scaleAmount(rawVal, dec),
+            数量: scaled,
             代币: symbol,
             时间: formatTime(ts),
           });
+          newAdded++;
+
+          // —— 账户情况（仅统计 accTokenContract） —— //
+          if (tokenAddr.toLowerCase() === accTokenContract.toLowerCase()) {
+            // 基础时间
+            if (firstTs === undefined || ts < firstTs) firstTs = ts;
+            if (lastTs === undefined || ts > lastTs) lastTs = ts;
+
+            const valNum = Number(scaleAmount(rawVal, dec) || 0);
+            if (to.toLowerCase() === addr.toLowerCase()) {
+              inSum += valNum;
+              if (from) inAddr.add(from.toLowerCase());
+            } else if (from.toLowerCase() === addr.toLowerCase()) {
+              outSum += valNum;
+              if (to) outAddr.add(to.toLowerCase());
+              if (lastOutTs === undefined || ts > lastOutTs) lastOutTs = ts;
+            }
+          }
         }
       }
+      pushRowsERC20(addr, rowsOut.slice(-newAdded));
+      updateStatus((prev => ({ pages: (prev as any).pages ? (prev as any).pages + 1 : 1 })) as any);
 
-      updateStatus({ pages: page, count: rowsOut.length });
+      // 推进游标
+      const maxBlock = Number(result[result.length - 1]?.blockNumber || 0);
       if (result.length < offset) {
-        updateStatus({ status: "done", pages: page, count: rowsOut.length });
+        updateStatus({ status: "done" });
         break;
       }
-      page += 1;
+      if (newAdded === 0) {
+        safetyNoProgress++;
+        if (safetyNoProgress >= 2) {
+          startBlock = maxBlock + 1;
+          safetyNoProgress = 0;
+        }
+      } else {
+        safetyNoProgress = 0;
+        startBlock = maxBlock;
+      }
+
       const tiny = result.length <= 1;
       await sleep(tiny ? Math.max(pauseMs * 5, 2000) : pauseMs);
     }
+
+    // 汇总账户情况
+    const balance = (inSum - outSum).toString();
+    mergeAcctStat(addr, {
+      balanceToken: balance,
+      firstTxTime: firstTs ? formatTime(firstTs) : undefined,
+      lastTxTime: lastTs ? formatTime(lastTs) : undefined,
+      lastOutTime: lastOutTs ? formatTime(lastOutTs) : undefined,
+      inAmount: inSum.toString(),
+      outAmount: outSum.toString(),
+      inCount: inAddr.size ? undefined as any : undefined, // 用下方真正的计数
+      outCount: outAddr.size ? undefined as any : undefined,
+      inAddrCount: inAddr.size,
+      outAddrCount: outAddr.size,
+    });
+
     return rowsOut;
   }
 
+  // —— 外部交易（ETH）：按区块游标 —— //
   async function fetchNormalForAddress(addr: string): Promise<any[]> {
     const rowsOut: any[] = [];
     const seen = new Set<string>();
-    let page = 1;
     const offset = 10000;
+    let startBlock = 0;
+    const endBlock = 99999999;
+    let safetyNoProgress = 0;
+
     const updateStatus = (patch: any) => setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], ...patch } }));
-    updateStatus({ status: "running" });
+    updateStatus({ status: "running", pages: 0, count: 0 });
 
     while (!cancelRef.current.cancelled) {
       const key = pick(apiKeys) || "";
@@ -392,10 +645,10 @@ export default function EthView() {
         module: "account",
         action: "txlist",
         address: addr,
-        startblock: "0",
-        endblock: "99999999",
+        startblock: String(startBlock),
+        endblock: String(endBlock),
         sort: "asc",
-        page: String(page),
+        page: "1",
         offset: String(offset),
         apikey: key,
       };
@@ -413,7 +666,7 @@ export default function EthView() {
       }
       if (String(status) === "0") {
         if (/No transactions found/i.test(message)) {
-          updateStatus({ status: "done", pages: page - 1, count: rowsOut.length });
+          updateStatus({ status: "done" });
           break;
         }
         if (/Max rate|rate limit|limit reached|busy|throttle/i.test(combo)) {
@@ -426,10 +679,11 @@ export default function EthView() {
       }
 
       if (!Array.isArray(result) || result.length === 0) {
-        updateStatus({ status: "done", pages: page - 1, count: rowsOut.length });
+        updateStatus({ status: "done" });
         break;
       }
 
+      let newAdded = 0;
       for (const it of result) {
         const id = String(it?.hash || "");
         const from = String(it?.from || "");
@@ -459,28 +713,77 @@ export default function EthView() {
             代币: symbol,
             时间: formatTime(ts),
           });
+          newAdded++;
+
+          // 账户情况的 first/last 也可以参考所有交易的时间（更全面）
+          const cur = ts;
+          setAcctStats((prev) => {
+            const old = prev[addr];
+            const f = old?.firstTxTime ? new Date(old.firstTxTime).getTime() : undefined;
+            const l = old?.lastTxTime ? new Date(old.lastTxTime).getTime() : undefined;
+            const lo = old?.lastOutTime ? new Date(old.lastOutTime).getTime() : undefined;
+            const nextFirst = f === undefined || cur < f ? formatTime(cur) : old?.firstTxTime;
+            const nextLast = l === undefined || cur > l ? formatTime(cur) : old?.lastTxTime;
+            const nextOut =
+              from.toLowerCase() === addr.toLowerCase()
+                ? (lo === undefined || cur > lo ? formatTime(cur) : old?.lastOutTime)
+                : old?.lastOutTime;
+            return {
+              ...prev,
+              [addr]: {
+                address: addr,
+                balanceToken: old?.balanceToken || "0",
+                firstTxTime: nextFirst,
+                lastTxTime: nextLast,
+                lastOutTime: nextOut,
+                inAmount: old?.inAmount || "0",
+                outAmount: old?.outAmount || "0",
+                inCount: old?.inCount || 0,
+                outCount: old?.outCount || 0,
+                inAddrCount: old?.inAddrCount || 0,
+                outAddrCount: old?.outAddrCount || 0,
+                label: old?.label,
+              },
+            };
+          });
         }
       }
+      pushRowsNormal(addr, rowsOut.slice(-newAdded));
+      updateStatus((prev => ({ pages: (prev as any).pages ? (prev as any).pages + 1 : 1 })) as any);
 
-      updateStatus({ pages: page, count: rowsOut.length });
+      const maxBlock = Number(result[result.length - 1]?.blockNumber || 0);
       if (result.length < offset) {
-        updateStatus({ status: "done", pages: page, count: rowsOut.length });
+        updateStatus({ status: "done" });
         break;
       }
-      page += 1;
+      if (newAdded === 0) {
+        safetyNoProgress++;
+        if (safetyNoProgress >= 2) {
+          startBlock = maxBlock + 1;
+          safetyNoProgress = 0;
+        }
+      } else {
+        safetyNoProgress = 0;
+        startBlock = maxBlock;
+      }
+
       const tiny = result.length <= 1;
       await sleep(tiny ? Math.max(pauseMs * 5, 2000) : pauseMs);
     }
     return rowsOut;
   }
 
+  // —— 内部交易：按区块游标 —— //
   async function fetchInternalForAddress(addr: string): Promise<any[]> {
     const rowsOut: any[] = [];
     const seen = new Set<string>();
-    let page = 1;
     const offset = 10000;
+    let startBlock = 0;
+    const endBlock = 99999999;
+    let safetyNoProgress = 0;
+
     const updateStatus = (patch: any) => setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], ...patch } }));
-    updateStatus({ status: "running" });
+    updateStatus({ status: "running", pages: 0, count: 0 });
 
     while (!cancelRef.current.cancelled) {
       const key = pick(apiKeys) || "";
@@ -496,10 +799,10 @@ export default function EthView() {
         module: "account",
         action: "txlistinternal",
         address: addr,
-        startblock: "0",
-        endblock: "99999999",
+        startblock: String(startBlock),
+        endblock: String(endBlock),
         sort: "asc",
-        page: String(page),
+        page: "1",
         offset: String(offset),
         apikey: key,
       };
@@ -517,7 +820,7 @@ export default function EthView() {
       }
       if (String(status) === "0") {
         if (/No transactions found/i.test(message)) {
-          updateStatus({ status: "done", pages: page - 1, count: rowsOut.length });
+          updateStatus({ status: "done" });
           break;
         }
         if (/Max rate|rate limit|limit reached|busy|throttle/i.test(combo)) {
@@ -529,11 +832,12 @@ export default function EthView() {
         break;
       }
 
-      if (!result.length) {
-        updateStatus({ status: "done", pages: page - 1, count: rowsOut.length });
+      if (!Array.isArray(result) || result.length === 0) {
+        updateStatus({ status: "done" });
         break;
       }
 
+      let newAdded = 0;
       for (const it of result) {
         const id = String(it?.hash || "");
         const from = String(it?.from || "");
@@ -563,67 +867,112 @@ export default function EthView() {
             代币: symbol,
             时间: formatTime(ts),
           });
+          newAdded++;
+
+          // 时间信息同样用于补全账户时间
+          const cur = ts;
+          setAcctStats((prev) => {
+            const old = prev[addr];
+            const f = old?.firstTxTime ? new Date(old.firstTxTime).getTime() : undefined;
+            const l = old?.lastTxTime ? new Date(old.lastTxTime).getTime() : undefined;
+            const lo = old?.lastOutTime ? new Date(old.lastOutTime).getTime() : undefined;
+            const nextFirst = f === undefined || cur < f ? formatTime(cur) : old?.firstTxTime;
+            const nextLast = l === undefined || cur > l ? formatTime(cur) : old?.lastTxTime;
+            const nextOut =
+              from.toLowerCase() === addr.toLowerCase()
+                ? (lo === undefined || cur > lo ? formatTime(cur) : old?.lastOutTime)
+                : old?.lastOutTime;
+            return {
+              ...prev,
+              [addr]: {
+                address: addr,
+                balanceToken: old?.balanceToken || "0",
+                firstTxTime: nextFirst,
+                lastTxTime: nextLast,
+                lastOutTime: nextOut,
+                inAmount: old?.inAmount || "0",
+                outAmount: old?.outAmount || "0",
+                inCount: old?.inCount || 0,
+                outCount: old?.outCount || 0,
+                inAddrCount: old?.inAddrCount || 0,
+                outAddrCount: old?.outAddrCount || 0,
+                label: old?.label,
+              },
+            };
+          });
         }
       }
+      pushRowsInternal(addr, rowsOut.slice(-newAdded));
+      updateStatus((prev => ({ pages: (prev as any).pages ? (prev as any).pages + 1 : 1 })) as any);
 
-      updateStatus({ pages: page, count: rowsOut.length });
+      const maxBlock = Number(result[result.length - 1]?.blockNumber || 0);
       if (result.length < offset) {
-        updateStatus({ status: "done", pages: page, count: rowsOut.length });
+        updateStatus({ status: "done" });
         break;
       }
-      page += 1;
+      if (newAdded === 0) {
+        safetyNoProgress++;
+        if (safetyNoProgress >= 2) {
+          startBlock = maxBlock + 1;
+          safetyNoProgress = 0;
+        }
+      } else {
+        safetyNoProgress = 0;
+        startBlock = maxBlock;
+      }
+
       const tiny = result.length <= 1;
       await sleep(tiny ? Math.max(pauseMs * 5, 2000) : pauseMs);
     }
     return rowsOut;
   }
 
-  async function fetchAllForAddress(addr: string): Promise<any[]> {
-    const all: any[] = [];
+  async function fetchAllForAddress(addr: string): Promise<void> {
+    // 根据 queryType 决定拉取范围
     if (queryType === "normal") {
-      const a = await fetchNormalForAddress(addr);
-      all.push(...a);
-      return all;
+      await fetchNormalForAddress(addr);
+      return;
     }
     if (queryType === "internal") {
-      const a = await fetchInternalForAddress(addr);
-      all.push(...a);
-      return all;
+      await fetchInternalForAddress(addr);
+      return;
     }
     if (queryType === "erc20") {
-      const a = await fetchErc20ForAddress(addr);
-      all.push(...a);
-      return all;
+      await fetchErc20ForAddress(addr);
+      return;
     }
-    const a = await fetchNormalForAddress(addr);
-    all.push(...a);
-    if (cancelRef.current.cancelled) return all;
-    const b = await fetchInternalForAddress(addr);
-    all.push(...b);
-    if (cancelRef.current.cancelled) return all;
-    const c = await fetchErc20ForAddress(addr);
-    all.push(...c);
-    return all;
+    // all
+    await fetchNormalForAddress(addr);
+    if (cancelRef.current.cancelled) return;
+    await fetchInternalForAddress(addr);
+    if (cancelRef.current.cancelled) return;
+    await fetchErc20ForAddress(addr);
   }
 
-  // —— 批量 / 单地址 控制 —— //
+  // —— 批量 / 单地址 控制（覆盖式） —— //
   async function runAll(): Promise<void> {
     if (!addresses.length) return;
+
+    // 覆盖：清空旧数据
+    clearResultsOnly();
+    setErrors([]);
+    // 重置状态
+    const resetSt: Record<string, any> = {};
+    addresses.forEach((a) => (resetSt[a] = { status: "pending", count: 0, pages: 0 }));
+    setAddrStatus(resetSt);
+
     setIsRunning(true);
     cancelRef.current.cancelled = false;
-    setRows([]);
-    setErrors([]);
-    let cursor = 0;
 
+    let cursor = 0;
     const worker = async () => {
       while (!cancelRef.current.cancelled) {
         const i = cursor++;
         if (i >= addresses.length) return;
         const addr = addresses[i];
         try {
-          const part = await fetchAllForAddress(addr);
-          setRows((prev) => [...prev, ...part]);
-          setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "done", count: part.length } }));
+          await fetchAllForAddress(addr);
+          setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "done" } }));
         } catch (e: any) {
           setErrors((es) => [...es, { address: addr, message: e?.message || "未知错误" }]);
           setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "error", message: String(e || "") } }));
@@ -632,6 +981,8 @@ export default function EthView() {
     };
     const workers = Array.from({ length: Math.max(1, concurrency) }, () => worker());
     await Promise.all(workers);
+    // 最后把 in/out 笔数修正为真正统计
+    finalizeCounts();
     setIsRunning(false);
   }
 
@@ -649,25 +1000,55 @@ export default function EthView() {
       return;
     }
 
-    setAddresses((prev) => {
-      const res = ensureListWithAddress(prev, addr);
-      if (!addrStatus[addr]) setAddrStatus((p) => ({ ...p, [addr]: { status: "pending", count: 0, pages: 0 } }));
-      if (!validMap[addr]) setValidMap((p) => ({ ...p, [addr]: "checking" }));
-      setTimeout(() => setValidMap((p) => ({ ...p, [addr]: isValidEthAddress(addr) ? "valid" : "invalid" })), 0);
-      return res.list;
-    });
+    // 覆盖：清空旧数据，仅查询该地址
+    setAddresses([addr]);
+    setAddrStatus({ [addr]: { status: "pending", count: 0, pages: 0 } });
+    setValidMap({ [addr]: isValidEthAddress(addr) ? "valid" : "invalid" });
+    clearResultsOnly();
+    setErrors([]);
 
     setIsRunning(true);
+    cancelRef.current.cancelled = false;
     try {
-      const part = await fetchAllForAddress(addr);
-      setRows((prev) => [...prev, ...part]);
-      setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "done", count: part.length } }));
+      await fetchAllForAddress(addr);
+      setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "done" } }));
     } catch (e: any) {
       setErrors((es) => [...es, { address: addr, message: e?.message || "未知错误" }]);
       setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "error", message: String(e || "") } }));
     } finally {
+      finalizeCounts();
       setIsRunning(false);
     }
+  }
+
+  // 修正账户笔数（在所有拉取完之后按地址聚合ERC20该合约的 in/out 笔数）
+  function finalizeCounts() {
+    const accToken = (contract && contract.trim()) || DEFAULT_USDT_ON_ETH;
+    const byAddr: Record<string, { inCnt: number; outCnt: number }> = {};
+    for (const r of rowsERC20) {
+      const a = r.地址 as string;
+      // rowsERC20 可能是多种代币（当参数留空）——只统计默认USDT或选中合约的
+      // 这里无法直接用 tokenAddress；Etherscan tokentx 返回中我们没保留合约列在最终行
+      // 采用近似：如果你在“参数”中填了合约，则 rowsERC20 已被该合约过滤；否则 rowsERC20 包含全部代币，我们仅统计符号为 USDT 的记录
+      const symbol: string = String(r.代币 || "");
+      const accept =
+        contract.trim()
+          ? true
+          : symbol.toUpperCase() === "USDT"; // 参数没填 → 仅统计 USDT
+      if (!accept) continue;
+
+      if (!byAddr[a]) byAddr[a] = { inCnt: 0, outCnt: 0 };
+      if ((r.转入地址 || "").toLowerCase() === a.toLowerCase()) byAddr[a].inCnt++;
+      if ((r.转出地址 || "").toLowerCase() === a.toLowerCase()) byAddr[a].outCnt++;
+    }
+    setAcctStats((prev) => {
+      const next: Record<string, AccountStat> = { ...prev };
+      for (const a of Object.keys(next)) {
+        const io = byAddr[a] || { inCnt: 0, outCnt: 0 };
+        next[a] = { ...next[a], inCount: io.inCnt, outCount: io.outCnt };
+      }
+      return next;
+    });
   }
 
   function addSingleToList(): void {
@@ -678,8 +1059,7 @@ export default function EthView() {
       const next = [...addresses, a];
       setAddresses(next);
       setAddrStatus((prev) => ({ ...prev, [a]: { status: "pending", count: 0, pages: 0 } }));
-      setValidMap((prev) => ({ ...prev, [a]: "checking" }));
-      setTimeout(() => setValidMap((p) => ({ ...p, [a]: isValidEthAddress(a) ? "valid" : "invalid" })), 0);
+      setValidMap((prev) => ({ ...prev, [a]: isValidEthAddress(a) ? "valid" : "invalid" }));
     }
     input.value = "";
     setInputValue("");
@@ -693,8 +1073,6 @@ export default function EthView() {
 
   function clearAll(): void {
     setAddresses([]);
-    setRows([]);
-    setErrors([]);
     setAddrStatus({});
     setValidMap({});
     setRowCandidates({});
@@ -707,6 +1085,8 @@ export default function EthView() {
     cancelRef.current.cancelled = false;
     setNeedApiKey(false);
     setErrorAlertVisible(false);
+    clearResultsOnly();
+    setErrors([]);
     if (errorTimerRef.current) {
       clearTimeout(errorTimerRef.current);
       errorTimerRef.current = null;
@@ -714,7 +1094,6 @@ export default function EthView() {
   }
 
   function deleteAddress(addr: string): void {
-    // 只删队列与状态，不动已产出结果
     setAddresses((prev) => prev.filter((a) => a !== addr));
     setAddrStatus((prev) => {
       const { [addr]: _removed, ...rest } = prev as any;
@@ -731,6 +1110,11 @@ export default function EthView() {
     setRowAutoOk((prev) => {
       const { [addr]: _ok, ...r } = prev as any;
       return r as any;
+    });
+    setAcctStats((prev) => {
+      const n = { ...prev };
+      delete n[addr];
+      return n;
     });
   }
 
@@ -761,6 +1145,13 @@ export default function EthView() {
       delete n[newAddr];
       return n;
     });
+    setAcctStats((prev) => {
+      const n = { ...prev };
+      const old = n[oldAddr];
+      delete n[oldAddr];
+      if (old && !n[newAddr]) n[newAddr] = { ...old, address: newAddr };
+      return n;
+    });
   }
 
   async function validateMany(addrs: string[]) {
@@ -777,7 +1168,6 @@ export default function EthView() {
     const val = (input?.value || "").trim();
     if (!val) return;
 
-    // 地址本身正确 → 按钮2秒“地址正确”，禁用；不展开候选
     if (isValidEthAddress(val)) {
       setInputSuggestOpen(false);
       setInputCandidates([]);
@@ -799,11 +1189,10 @@ export default function EthView() {
   }
 
   async function autoSuggestForRow(addr: string) {
-    // 该地址本身正确 → 行按钮2秒“地址正确”，禁用；不显示“未找到候选…”
     if (isValidEthAddress(addr)) {
       setRowCandidates((prev) => {
         const n = { ...prev };
-        delete n[addr]; // 确保不显示“未找到候选…”
+        delete n[addr];
         return n;
       });
       setRowAutoOk((prev) => ({ ...prev, [addr]: true }));
@@ -855,9 +1244,9 @@ export default function EthView() {
     <div className="p-4 md:p-6">
       <Card className="rounded-2xl shadow-lg border border-neutral-200/70 bg-white/90">
         <CardHeader className="pb-2">
-          <CardTitle className="text-2xl font-bold">以太坊 Ethereum · ERC20/交易</CardTitle>
+          <CardTitle className="text-2xl font-bold">以太坊 Ethereum · 交易 & ERC20</CardTitle>
           <CardDescription className="text-muted-foreground">
-            Transactions · Internal Transactions · Token Transfers (ERC-20) · Excel 批量 / 单地址 · 并发 & 限速 · 导出
+            Transactions · Internal · Token Transfers (ERC-20) · Excel 批量 / 单地址 · 并发 & 限速 · 导出
           </CardDescription>
         </CardHeader>
         <CardContent>
@@ -893,7 +1282,7 @@ export default function EthView() {
                   : "rounded-2xl hover:ring-1 hover:ring-neutral-300"
               }
               onClick={() => void autoSuggestForInput()}
-              title="基于 1 字符编辑生成候选"
+              title="基于 1-2 步编辑生成候选"
             >
               <Wand2 className="mr-2 h-4 w-4" />
               {inputAutoOk ? "地址正确" : "自动校验"}
@@ -1005,7 +1394,7 @@ export default function EthView() {
                         className="mt-2 rounded-2xl focus-visible:ring-2 focus-visible:ring-indigo-500/60 focus-visible:ring-offset-2"
                         value={contract}
                         onChange={(e) => setContract(e.target.value)}
-                        placeholder="如：USDT 合约地址（留空=全部代币）"
+                        placeholder={`不填则账户情况按 USDT(${DEFAULT_USDT_ON_ETH.slice(0, 6)}...${DEFAULT_USDT_ON_ETH.slice(-4)}) 统计`}
                       />
                     </div>
 
@@ -1074,7 +1463,7 @@ export default function EthView() {
                     </div>
                   </div>
 
-                  {/* 查询范围：中文主文案 + 英文副标题 */}
+                  {/* 查询范围 */}
                   <div className="mt-4 space-y-2">
                     <div className="text-sm text-muted-foreground">查询范围</div>
                     <div className="flex flex-wrap gap-2">
@@ -1093,8 +1482,8 @@ export default function EthView() {
                             onClick={() => setQueryType(opt.k)}
                           >
                             <div className="flex flex-col leading-tight items-start">
-                              <span className={`font-medium ${active ? "text-white" : "text-neutral-800"}`}>{opt.cn}</span>
-                              <span className={`text-[10px] ${active ? "text-white/90" : "text-neutral-500"}`}>{opt.en}</span>
+                              <span className="font-medium">{opt.cn}</span>
+                              <span className="text-[10px] text-white/80">{opt.en}</span>
                             </div>
                           </Button>
                         );
@@ -1164,7 +1553,7 @@ export default function EthView() {
                 <Button
                   variant="outline"
                   className="rounded-2xl hover:ring-1 hover:ring-neutral-300"
-                  disabled={!(allDone && rows.length > 0)}
+                  disabled={!(allDone && rowsAll.length > 0)}
                   onClick={downloadExcel}
                 >
                   <Download className="mr-2 h-4 w-4" />
@@ -1173,7 +1562,7 @@ export default function EthView() {
                 <Button
                   variant="outline"
                   className="rounded-2xl hover:ring-1 hover:ring-neutral-300"
-                  disabled={!(allDone && rows.length > 0)}
+                  disabled={!(allDone && rowsAll.length > 0)}
                   onClick={downloadCSV}
                 >
                   <Download className="mr-2 h-4 w-4" />
@@ -1208,10 +1597,12 @@ export default function EthView() {
                         <div className="flex items-center gap-3">
                           <div className="text-xs text-neutral-500 w-6 text-center shrink-0">{idx + 1}</div>
 
-                          {/* 地址（完整显示） */}
+                          {/* 地址（省略 + 悬浮完整 + 复制） */}
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-3">
-                              <span className="font-mono text-sm break-all">{a}</span>
+                              <span className="font-mono text-sm break-all">
+                                <AddressHoverEllipsis address={a} head={7} tail={6} />
+                              </span>
 
                               {/* 右侧：校验 + 状态 + 记录 + 页数 */}
                               <div className="ml-auto flex items-center gap-2 shrink-0">
@@ -1265,7 +1656,7 @@ export default function EthView() {
                           </div>
                         </div>
 
-                        {/* 候选面板（该行）—— 仅当有候选时显示；若地址正确则不显示“未找到候选” */}
+                        {/* 候选面板（该行） */}
                         {cands.length > 0 && !okNow && (
                           <div className="mt-2 rounded-lg border bg-neutral-50/60 p-2">
                             <div className="text-xs text-neutral-500 mb-1">候选地址（点击替换该行）：</div>
@@ -1325,20 +1716,30 @@ export default function EthView() {
             </CardContent>
           </Card>
 
-          {/* 底部：查询结果 */}
-          <Card className="rounded-2xl shadow-sm mt-6">
-            <CardHeader className="pb-3">
-              <div className="flex items-center gap-2">
-                <CardTitle className="text-base font-semibold">查询结果（{rows.length} 条）</CardTitle>
-                <span className="text-sm text-muted-foreground">· 预览首 1000 条</span>
-              </div>
+          {/* —— 账户情况 —— */}
+          <Card className="rounded-2xl shadow-md border border-neutral-200/60 bg-white/80 mt-6">
+            <CardHeader className="pb-3 flex flex-row items-center gap-2">
+              <CardTitle className="text-base font-semibold">账户情况（按 {contract.trim() ? "所选合约" : "USDT(ERC-20)"} 统计）</CardTitle>
             </CardHeader>
-            <CardContent>
-              <div className="overflow-auto max-h-[520px] rounded-2xl border">
-                <table className="min-w-full text-sm">
+            <CardContent className="pt-0 pb-4">
+              <div className="overflow-auto rounded-2xl border">
+                <table className="min-w-full text-sm table-fixed">
                   <thead className="sticky top-0 bg-neutral-50 backdrop-blur">
                     <tr>
-                      {["地址", "哈希", "转入地址", "转出地址", "数量", "代币", "时间"].map((h) => (
+                      {[
+                        "地址",
+                        "标签",
+                        "当前余额(代币)",
+                        "首次交易时间",
+                        "最近交易时间",
+                        "最近流出时间",
+                        "流入金额",
+                        "流入笔数",
+                        "流入地址数",
+                        "流出金额",
+                        "流出笔数",
+                        "流出地址数",
+                      ].map((h) => (
                         <th key={h} className="text-left p-2 whitespace-nowrap">
                           {h}
                         </th>
@@ -1346,20 +1747,130 @@ export default function EthView() {
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.slice(0, 1000).map((r, i) => (
-                      <tr key={i} className="border-b last:border-none">
-                        <td className="p-2 font-mono text-xs break-all">{r.地址}</td>
-                        <td className="p-2 font-mono text-xs break-all">{r.哈希}</td>
-                        <td className="p-2 font-mono text-xs break-all">{r.转入地址}</td>
-                        <td className="p-2 font-mono text-xs break-all">{r.转出地址}</td>
-                        <td className="p-2">{r.数量}</td>
-                        <td className="p-2">{r.代币}</td>
-                        <td className="p-2">{r.时间}</td>
+                    {addresses.length === 0 ? (
+                      <tr>
+                        <td className="p-4 text-center text-neutral-500" colSpan={12}>
+                          暂无数据
+                        </td>
                       </tr>
-                    ))}
+                    ) : (
+                      addresses.map((a) => {
+                        const st = acctStats[a] || {
+                          address: a,
+                          label: "",
+                          balanceToken: "0",
+                          firstTxTime: "",
+                          lastTxTime: "",
+                          lastOutTime: "",
+                          inAmount: "0",
+                          inCount: 0,
+                          inAddrCount: 0,
+                          outAmount: "0",
+                          outCount: 0,
+                          outAddrCount: 0,
+                        };
+                        return (
+                          <tr key={a} className="border-b last:border-none">
+                            <td className="p-2 font-mono text-xs break-all">
+                              <AddressHoverEllipsis address={a} head={7} tail={6} />
+                            </td>
+                            <td className="p-2">{st.label || "-"}</td>
+                            <td className="p-2">{formatHumanAmount2(st.balanceToken)}</td>
+                            <td className="p-2"><TimeCell value={st.firstTxTime || "-"} /></td>
+                            <td className="p-2"><TimeCell value={st.lastTxTime || "-"} /></td>
+                            <td className="p-2"><TimeCell value={st.lastOutTime || "-"} /></td>
+                            <td className="p-2">{formatHumanAmount2(st.inAmount)}</td>
+                            <td className="p-2">{st.inCount ?? 0}</td>
+                            <td className="p-2">{st.inAddrCount ?? 0}</td>
+                            <td className="p-2">{formatHumanAmount2(st.outAmount)}</td>
+                            <td className="p-2">{st.outCount ?? 0}</td>
+                            <td className="p-2">{st.outAddrCount ?? 0}</td>
+                          </tr>
+                        );
+                      })
+                    )}
                   </tbody>
                 </table>
               </div>
+              <div className="text-xs text-neutral-500 mt-2">
+                注：展示金额仅做“万/亿、保留两位小数”的可读化；导出文件中保留原始数值字符串，不做缩放。
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* —— 底部：查询结果（Tabs 四类） —— */}
+          <Card className="rounded-2xl shadow-sm mt-6">
+            <CardHeader className="pb-3">
+              <div className="flex items-center gap-2">
+                <CardTitle className="text-base font-semibold">查询结果</CardTitle>
+                <span className="text-sm text-muted-foreground">· 预览首 1000 条 / 各类</span>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <Tabs defaultValue="all" className="w-full">
+                <TabsList className="rounded-2xl bg-neutral-100/60 p-1 flex flex-wrap gap-2 mb-3">
+                  <TabsTrigger value="all" className="rounded-xl border bg-white data-[state=active]:bg-gradient-to-r data-[state=active]:from-indigo-600 data-[state=active]:to-fuchsia-600 data-[state=active]:text-white data-[state=active]:border-transparent">All</TabsTrigger>
+                  <TabsTrigger value="normal" className="rounded-xl border bg-white data-[state=active]:bg-gradient-to-r data-[state=active]:from-indigo-600 data-[state=active]:to-fuchsia-600 data-[state=active]:text-white data-[state=active]:border-transparent">Transactions</TabsTrigger>
+                  <TabsTrigger value="internal" className="rounded-xl border bg-white data-[state=active]:bg-gradient-to-r data-[state=active]:from-indigo-600 data-[state=active]:to-fuchsia-600 data-[state=active]:text-white data-[state=active]:border-transparent">Internal</TabsTrigger>
+                  <TabsTrigger value="erc20" className="rounded-xl border bg-white data-[state=active]:bg-gradient-to-r data-[state=active]:from-indigo-600 data-[state=active]:to-fuchsia-600 data-[state=active]:text-white data-[state=active]:border-transparent">Token Transfers</TabsTrigger>
+                </TabsList>
+
+                {/* 通用表头渲染器（哈希窄、时间宽；时间换行居中） */}
+                {(
+                  [
+                    { key: "all", data: rowsAll },
+                    { key: "normal", data: rowsNormal },
+                    { key: "internal", data: rowsInternal },
+                    { key: "erc20", data: rowsERC20 },
+                  ] as const
+                ).map(({ key, data }) => (
+                  <TabsContent key={key} value={key}>
+                    <div className="overflow-auto max-h-[520px] rounded-2xl border">
+                      <table className="min-w-full text-sm table-fixed">
+                        <thead className="sticky top-0 bg-neutral-50 backdrop-blur">
+                          <tr>
+                            <th className="text-left p-2 whitespace-nowrap w-[220px]">地址</th>
+                            <th className="text-left p-2 whitespace-nowrap w-[140px]">哈希</th>
+                            <th className="text-left p-2 whitespace-nowrap w-[220px]">转入地址</th>
+                            <th className="text-left p-2 whitespace-nowrap w-[220px]">转出地址</th>
+                            <th className="text-left p-2 whitespace-nowrap w-[120px]">数量</th>
+                            <th className="text-left p-2 whitespace-nowrap w-[100px]">代币</th>
+                            <th className="text-left p-2 whitespace-nowrap w-[200px]">时间</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {data.slice(0, 1000).map((r, i) => (
+                            <tr key={i} className="border-b last:border-none">
+                              <td className="p-2 font-mono text-xs break-all w-[220px]">
+                                <AddressHoverEllipsis address={r.地址} head={7} tail={6} />
+                              </td>
+                              <td className="p-2 font-mono text-xs break-all w-[140px]">{r.哈希}</td>
+                              <td className="p-2 font-mono text-xs break-all w-[220px]">
+                                {r.转入地址 ? <AddressHoverEllipsis address={r.转入地址} head={7} tail={6} /> : "-"}
+                              </td>
+                              <td className="p-2 font-mono text-xs break-all w-[220px]">
+                                {r.转出地址 ? <AddressHoverEllipsis address={r.转出地址} head={7} tail={6} /> : "-"}
+                              </td>
+                              <td className="p-2 w-[120px]">{formatHumanAmount2(r.数量)}</td>
+                              <td className="p-2 w-[100px]">{r.代币}</td>
+                              <td className="p-2 w-[200px]">
+                                <TimeCell value={r.时间} />
+                              </td>
+                            </tr>
+                          ))}
+                          {data.length === 0 && (
+                            <tr>
+                              <td className="p-4 text-center text-neutral-500" colSpan={7}>
+                                暂无数据
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </TabsContent>
+                ))}
+              </Tabs>
             </CardContent>
           </Card>
         </CardContent>

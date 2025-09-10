@@ -233,6 +233,45 @@ export default function TronView() {
     );
   }
 
+  // === 交易类型 → 中文映射（用于“交易 Transactions”表） ===
+  function translateTronType(t: string): string {
+    const map: Record<string, string> = {
+      TransferContract: "转账（TRX）",
+      TransferAssetContract: "转账（TRC10）",
+      TriggerSmartContract: "调用合约",
+      CreateSmartContract: "创建合约",
+      DelegateResourceContract: "委托资源",
+      UnDelegateResourceContract: "取消资源委托",
+      FreezeBalanceContract: "冻结余额",
+      UnfreezeBalanceContract: "解冻余额",
+      FreezeBalanceV2: "冻结余额（V2）",
+      UnfreezeBalanceV2: "解冻余额（V2）",
+      WithdrawExpireUnfreeze: "提取到期解冻",
+      WithdrawBalanceContract: "提取奖励",
+      ClaimRewardsContract: "领取投票奖励",
+      VoteWitnessContract: "投票超级代表",
+      AccountCreateContract: "创建账户",
+      AccountPermissionUpdateContract: "更新权限",
+      SetAccountIdContract: "设置账户ID",
+      UpdateEnergyLimitContract: "更新能量上限",
+      ProposalCreateContract: "创建提案",
+      ProposalApproveContract: "批准提案",
+      ProposalDeleteContract: "删除提案",
+      BuyStorageBytesContract: "购买存储",
+      SellStorageContract: "出售存储",
+      UpdateAssetContract: "更新资产",
+      ParticipateAssetIssueContract: "参与发行资产",
+      AssetIssueContract: "发行资产",
+      ExchangeCreateContract: "创建兑换",
+      ExchangeInjectContract: "注入兑换",
+      ExchangeWithdrawContract: "提取兑换",
+      ExchangeTransactionContract: "兑换交易",
+      MultiSign: "多签",
+    };
+    const key = (t || "").trim();
+    return map[key] || key || "-";
+  }
+
   // 队列与数据
   const [addresses, setAddresses] = useState<string[]>([]);
   const [rows, setRows] = useState<any[]>([]);
@@ -1433,7 +1472,7 @@ export default function TronView() {
           </div>
 
           {/* 查询参数 */}
-          <Card className="rounded-2xl shadow-md border border-neutral-200/60 bg白/80 mt-6">
+          <Card className="rounded-2xl shadow-md border border-neutral-200/60 bg-white/80 mt-6">
             <CardHeader className="pb-2 flex flex-row items-center gap-2">
               <Settings className="h-5 w-5" />
               <CardTitle className="text-base font-semibold">查询参数</CardTitle>
@@ -1694,7 +1733,7 @@ export default function TronView() {
                             <div className="text-xs text-neutral-500 mb-1">候选地址（点击替换该行）：</div>
                             <div className="flex flex-wrap gap-2">
                               {cands.map((c) => (
-                                <button key={c} onClick={() => replaceAddress(a, c)} className="px-2 py-1 rounded-md border bg白 hover:bg-neutral-50 font-mono text-xs" title={c}>
+                                <button key={c} onClick={() => replaceAddress(a, c)} className="px-2 py-1 rounded-md border bg-white hover:bg-neutral-50 font-mono text-xs" title={c}>
                                   {c}
                                 </button>
                               ))}
@@ -1755,8 +1794,7 @@ export default function TronView() {
                   </Button>
                 ) : (
                   <Button
-                    variant="secondary"
-                    className="rounded-2xl bg-neutral-900 text白 hover:bg-neutral-800"
+                    className="rounded-2xl bg-neutral-900 text-white hover:bg-neutral-800"
                     onClick={stopAll}
                     title="终止任务（与上方停止共享同一取消标志）"
                   >
@@ -1787,19 +1825,29 @@ export default function TronView() {
 
               <div className="overflow-auto max-h-[520px] rounded-2xl border">
                 <table className="min-w-full text-sm">
+                  {/* 固定第1列（地址）与第9列（初始手续费来源）宽度为200px */}
+                  <colgroup>
+                    <col style={{ width: "200px" }} />
+                    <col span={8} />
+                    <col style={{ width: "200px" }} />
+                    <col span={10} />
+                  </colgroup>
                   <thead className="sticky top-0 bg-neutral-50 backdrop-blur">
                     <tr>
                       {[
                         "地址","实体标签","风险标签","属性标签","是否合约","TRON 链总资产","余额(TRX)","余额(USDT)",
                         "初始手续费来源","首次入金时间","首次入账数量","首次交易时间","最近交易时间","最近流出时间",
                         "流入金额(USDT)","流入笔数","流入地址数","流出金额(USDT)","流出笔数","流出地址数",
-                      ].map((h) => (<th key={h} className="text-left p-2 whitespace-nowrap">{h}</th>))}
+                      ].map((h) => (<th key={h} className="text-center p-2 whitespace-nowrap">{h}</th>))} {/* 表头全部居中 */}
                     </tr>
                   </thead>
                   <tbody>
                     {acctStats.map((r, i) => (
                       <tr key={r.地址 + i} className="border-b last:border-none">
-                        <td className="p-2"><AddressCell addr={r.地址} /></td>
+                        {/* 地址：固定宽度200px，允许换行 */}
+                        <td className="p-2 w-[200px] align-top">
+                          <div className="font-mono text-xs break-all leading-tight w-[200px]">{r.地址}</div>
+                        </td>
                         <td className="p-2">{r["实体标签"] || "-"}</td>
                         <td className="p-2">{r["风险标签"] || "-"}</td>
                         <td className="p-2">{r["属性标签"] || "-"}</td>
@@ -1807,7 +1855,12 @@ export default function TronView() {
                         <td className="p-2">{r["TRON 链总资产"] != null ? fmt2(r["TRON 链总资产"]) : "-"}</td>
                         <td className="p-2">{r["余额(TRX)"] != null ? fmt2(r["余额(TRX)"]) : "-"}</td>
                         <td className="p-2">{r["余额(USDT)"] != null ? fmt2(r["余额(USDT)"]) : "-"}</td>
-                        <td className="p-2">{r["初始手续费来源"] && r["初始手续费来源"] !== "-" ? (<span className="font-mono text-xs">{r["初始手续费来源"]}</span>) : "-"}</td>
+                        {/* 初始手续费来源：固定宽度200px，允许换行 */}
+                        <td className="p-2 w-[200px] align-top">
+                          {r["初始手续费来源"] && r["初始手续费来源"] !== "-" ? (
+                            <div className="font-mono text-xs break-all leading-tight w-[200px]">{r["初始手续费来源"]}</div>
+                          ) : "-"}
+                        </td>
                         <td className="p-2"><TimeCell value={r["首次入金时间"] || "-"} /></td>
                         <td className="p-2">{r["首次入账数量"] != null && r["首次入账数量"] !== "-" ? fmt2(r["首次入账数量"]) : "-"}</td>
                         <td className="p-2"><TimeCell value={r.首次交易时间} /></td>
@@ -1870,13 +1923,13 @@ export default function TronView() {
                     <table className="min-w-full text-sm">
                       <thead className="sticky top-0 bg-neutral-50 backdrop-blur">
                         <tr>
-                          <th className="text-left p-2 whitespace-nowrap">地址</th>
-                          <th className="text-left p-2 whitespace-nowrap w-[200px]">哈希</th>
-                          <th className="text-left p-2 whitespace-nowrap">转入地址</th>
-                          <th className="text-left p-2 whitespace-nowrap">转出地址</th>
-                          <th className="text-left p-2 whitespace-nowrap">数量</th>
-                          <th className="text-left p-2 whitespace-nowrap">代币</th>
-                          <th className="text-left p-2 whitespace-nowrap w-[140px]">时间</th>
+                          <th className="text-center p-2 whitespace-nowrap">地址</th>
+                          <th className="text-center p-2 whitespace-nowrap w-[200px]">哈希</th>
+                          <th className="text-center p-2 whitespace-nowrap">转入地址</th>
+                          <th className="text-center p-2 whitespace-nowrap">转出地址</th>
+                          <th className="text-center p-2 whitespace-nowrap">数量</th>
+                          <th className="text-center p-2 whitespace-nowrap">代币</th>
+                          <th className="text-center p-2 whitespace-nowrap w-[140px]">时间</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -1902,7 +1955,7 @@ export default function TronView() {
                       <thead className="sticky top-0 bg-neutral-50 backdrop-blur">
                         <tr>
                           {["地址", "哈希", "类型", "发起地址", "接收地址", "金额(TRX)", "状态", "时间"].map((h) => (
-                            <th key={h} className="text-left p-2 whitespace-nowrap">{h}</th>
+                            <th key={h} className="text-center p-2 whitespace-nowrap">{h}</th>
                           ))}
                         </tr>
                       </thead>
@@ -1911,7 +1964,8 @@ export default function TronView() {
                           <tr key={i} className="border-b last:border-none">
                             <td className="p-2 font-mono text-xs break-all">{r.地址}</td>
                             <td className="p-2 font-mono text-xs break-all">{r.哈希}</td>
-                            <td className="p-2 whitespace-nowrap">{r.类型 || "-"}</td>
+                            {/* 类型：显示中文映射 */}
+                            <td className="p-2 whitespace-nowrap">{translateTronType(r.类型)}</td>
                             <td className="p-2 font-mono text-xs break-all">{r.发起地址 || "-"}</td>
                             <td className="p-2 font-mono text-xs break-all">{r.接收地址 || "-"}</td>
                             <td className="p-2">{r.金额TRX ? formatHumanAmount2(r.金额TRX) : "-"}</td>

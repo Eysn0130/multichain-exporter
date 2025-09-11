@@ -24,7 +24,7 @@ jobs:
       # 重新生成锁文件（避免审计等耗时）
       - run: npm install --no-audit --no-fund
 
-      # 用现成 Action 自动提交 package-lock.json 的变化
+      #  用现成 Action 自动提交 package-lock.json 的变化
       - name: Commit lockfile if changed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:

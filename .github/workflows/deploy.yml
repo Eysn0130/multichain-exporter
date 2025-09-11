@@ -1,4 +1,4 @@
-name: Deploy to GitHub Pages
+name: Build & Deploy to GitHub Pages
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: true
 
 jobs:
@@ -25,12 +25,22 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: npm
+          # ⚠️ 这里不要加 cache: 'npm' —— 第一次还没有 lockfile，会提示报错
 
+      # 生成临时的 package-lock.json（不安装依赖）
+      - name: Generate lockfile
+        run: npm install --package-lock-only
+
+      # 有了 lockfile，使用 npm ci 进行干净安装
       - name: Install dependencies
-        run: npm ci || npm i
+        run: npm ci
 
-      # 如已添加脚本 "build:pages": "cross-env GH_PAGES=true vite build"
+      # 写入生产环境变量（指向 Cloudflare Worker 转发器）
+      - name: Create .env.production
+        run: |
+          echo "VITE_OKLINK_BASE=https://ok-proxy.eysn0130.workers.dev/oklink" > .env.production
+
+      # 你的构建脚本（你仓库已有 build:pages）
       - name: Build (Vite)
         run: npm run build:pages
 
@@ -44,8 +54,8 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
+      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Deploy to GitHub Pages
-        id: deploy
+        id: deployment
         uses: actions/deploy-pages@v4

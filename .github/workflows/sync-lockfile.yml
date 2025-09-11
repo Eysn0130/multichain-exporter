@@ -1,0 +1,35 @@
+name: Sync lockfile
+
+on:
+  workflow_dispatch:  # 手动触发
+  push:
+    paths:
+      - "package.json"   # 如果以后改了依赖，自动跑一次
+      - ".github/workflows/sync-lockfile.yml"
+
+jobs:
+  lockfile:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: "npm"
+
+      - name: Install deps (regenerate lockfile)
+        run: npm install
+
+      - name: Commit lockfile if changed
+        run: |
+          if ! git diff --quiet package-lock.json; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add package-lock.json
+            git commit -m "chore: sync lockfile for Cloudflare Pages"
+            git push
+          else
+            echo "Lockfile already in sync."

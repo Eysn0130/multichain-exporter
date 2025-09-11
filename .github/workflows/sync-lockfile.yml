@@ -19,12 +19,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: 'npm'
 
-      # 重新生成锁文件（避免审计等耗时）
-      - run: npm install --no-audit --no-fund
+      # 生成/同步 package-lock.json
+      - name: Install deps (generate lockfile)
+        run: npm install --no-audit --no-fund
 
-      #  用现成 Action 自动提交 package-lock.json 的变化
+      # 仅当 lockfile 变更时提交
       - name: Commit lockfile if changed
         uses: stefanzweifel/git-auto-commit-action@v5
         with:

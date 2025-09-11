@@ -312,6 +312,20 @@ export default function TronView() {
   const [acctStatStatus, setAcctStatStatus] = useState<Record<string, AddrState>>({});
   const [acctStatErrors, setAcctStatErrors] = useState<{ address: string; message: string }[]>([]);
   const [isAcctRunning, setIsAcctRunning] = useState(false);
+  // OKLink 标签补全中的任务数（用于防止按钮过早恢复）
+  const [oklinkPending, setOklinkPending] = useState(0);
+  // OKLink 标签查询的每地址状态（独立于计算）
+  const [oklinkStatus, setOklinkStatus] = useState<Record<string, AddrState>>({});
+  // 衍生统计：计算阶段正在统计数（TronGrid 聚合）
+  const acctRunningCount = useMemo(
+    () => addresses.reduce((n, a) => n + (acctStatStatus[a] === "running" ? 1 : 0), 0),
+    [addresses, acctStatStatus]
+  );
+  // 衍生统计：标签查询完成数（OKLink）
+  const oklinkDoneCount = useMemo(
+    () => addresses.reduce((n, a) => n + (oklinkStatus[a] === "done" ? 1 : 0), 0),
+    [addresses, oklinkStatus]
+  );
 
   const runningCount = useMemo(
     () => Object.values(addrStatus).filter((s) => s?.status === "running").length,
@@ -766,9 +780,9 @@ export default function TronView() {
           ]);
           oklinkCacheRef.current.set(addr, { data, ts: Date.now() });
           return data;
-        } catch (e: any) {
-          lastErr = e;
-          const msg = String(e?.message || e || "");
+        } catch (e) {
+          lastErr = e as any;
+          const msg = String((e as any)?.message || e || "");
           // 仅在超时/明显临时错误时退避重试
           if (attempt < maxAttempts && (msg.includes("TIMEOUT") || msg.includes("429") || msg.startsWith("5"))) {
             await sleep(600 * attempt + Math.floor(Math.random() * 300));
@@ -992,6 +1006,8 @@ export default function TronView() {
   }
 
   async function enrichOne(addr: string): Promise<void> {
+    setOklinkPending((n) => n + 1);
+    setOklinkStatus((prev) => ({ ...prev, [addr]: "running" }));
     try {
       const ok = await withOklinkQueue(() => fetchOklinkSummarySafe(addr, "zh-hans"));
       const fields = buildOklinkFields(ok);
@@ -1003,10 +1019,14 @@ export default function TronView() {
         next[idx] = { ...next[idx], ...fields };
         return next;
       });
+      setOklinkStatus((prev) => ({ ...prev, [addr]: "done" }));
     } catch {
       // 忽略 OKLink 失败
-    }
-  }
+      setOklinkStatus((prev) => ({ ...prev, [addr]: "error" }))
+    } finally {
+      setOklinkPending((n) => Math.max(0, n - 1));
+     }
+   }
 
   // ===== 批量 / 单地址 控制 =====
   async function runAll(): Promise<void> {
@@ -1018,6 +1038,12 @@ export default function TronView() {
       const n: Record<string, AddrState> = { ...prev };
       addresses.forEach((a) => (n[a] = "pending"));
       return n;
+    });
+    // 初始化标签查询状态表为 pending（与计算解耦）
+    setOklinkStatus(() => {
+      const s: Record<string, AddrState> = {};
+      addresses.forEach((a) => (s[a] = "pending"));
+      return s;
     });
 
     setIsRunning(true);
@@ -1051,10 +1077,11 @@ export default function TronView() {
             const status: AddrState = cur?.status === "error" ? "error" : "done";
             return { ...prev, [addr]: { ...cur, status, count: part.length } };
           });
-        } catch (e: any) {
-          setErrors((es) => [...es, { address: addr, message: e?.message || "未知错误" }]);
-          setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "error", message: String(e || "") } }));
-          setAcctStatErrors((es) => [...es, { address: addr, message: e?.message || "未知错误" }]);
+        } catch (e) {
+          const err = e as any;
+          setErrors((es) => [...es, { address: addr, message: err?.message || "未知错误" }]);
+          setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "error", message: String(err || "") } }));
+          setAcctStatErrors((es) => [...es, { address: addr, message: err?.message || "未知错误" }]);
           setAcctStatStatus((prev) => ({ ...prev, [addr]: "error" }));
         }
       }
@@ -1091,6 +1118,7 @@ export default function TronView() {
     setIsRunning(true);
     setIsAcctRunning(true);
     setAcctStatStatus((prev) => ({ ...prev, [addr]: "pending" }));
+    setOklinkStatus((prev) => ({ ...prev, [addr]: "pending" }));
     setAcctStats((prev) => prev.filter((r) => r.地址 !== addr));
     setAcctStatErrors((prev) => prev.filter((e) => e.address !== addr));
     setRows((prev) => prev.filter((r) => r.地址 !== addr));
@@ -1113,10 +1141,11 @@ export default function TronView() {
         const status: AddrState = cur?.status === "error" ? "error" : "done";
         return { ...prev, [addr]: { ...cur, status, count: part.length } };
       });
-    } catch (e: any) {
-      setErrors((es) => [...es, { address: addr, message: e?.message || "未知错误" }]);
-      setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "error", message: String(e || "") } }));
-      setAcctStatErrors((es) => [...es, { address: addr, message: e?.message || "未知错误" }]);
+    } catch (e) {
+      const err = e as any;
+      setErrors((es) => [...es, { address: addr, message: err?.message || "未知错误" }]);
+      setAddrStatus((prev) => ({ ...prev, [addr]: { ...prev[addr], status: "error", message: String(err || "") } }));
+      setAcctStatErrors((es) => [...es, { address: addr, message: err?.message || "未知错误" }]);
       setAcctStatStatus((prev) => ({ ...prev, [addr]: "error" }));
     } finally {
       setIsRunning(false);
@@ -1162,6 +1191,8 @@ export default function TronView() {
     setNeedApiKey(false);
     setErrorAlertVisible(false);
     clearAcctStats();
+    setOklinkStatus({});
+    setOklinkPending(0);
     if (errorTimerRef.current) {
       clearTimeout(errorTimerRef.current);
       errorTimerRef.current = null;
@@ -1189,6 +1220,10 @@ export default function TronView() {
     });
     setRows((prev) => prev.filter((r) => r.地址 !== addr));
     setTxRows((prev) => prev.filter((r) => r.地址 !== addr));
+    setOklinkStatus((prev) => {
+      const { [addr]: _rm, ...rest } = prev as any;
+      return rest as any;
+    });
   }
   function replaceAddress(oldAddr: string, newAddr: string): void {
     if (!oldAddr || !newAddr || oldAddr === newAddr) return;
@@ -1222,6 +1257,10 @@ export default function TronView() {
     });
     setRows((prev) => prev.filter((r) => r.地址 !== oldAddr));
     setTxRows((prev) => prev.filter((r) => r.地址 !== oldAddr));
+    setOklinkStatus((prev) => {
+      const { [oldAddr]: oldS, ...rest } = prev as any;
+      return { ...rest, [newAddr]: oldS || "pending" } as any;
+    });
   }
 
   async function validateMany(addrs: string[]) {
@@ -1268,55 +1307,70 @@ export default function TronView() {
   }
 
   // 账户情况：独立按钮
-  async function runAcctStats(): Promise<void> {
-    if (!addresses.length) return;
-    if (apiKeys.length === 0) {
-      setNeedApiKey(true);
-      const msg = "请输入有效的 API Key";
-      setAcctStatErrors((es) => (es.some((x) => x.message === msg) ? es : [...es, { address: "", message: msg }]));
-      return;
-    }
-    setIsAcctRunning(true);
-    cancelRef.current.cancelled = false;
+async function runAcctStats(): Promise<void> {
+  if (!addresses.length) return;
+  if (apiKeys.length === 0) {
+    setNeedApiKey(true);
+    const msg = "请输入有效的 API Key";
+    setAcctStatErrors((es) => (es.some((x) => x.message === msg) ? es : [...es, { address: "", message: msg }]));
+    return;
+  }
+  setIsAcctRunning(true);
+  cancelRef.current.cancelled = false;
 
-    setAcctStats([]);
-    setAcctStatErrors([]);
-    setAcctStatStatus(() => {
-      const next: Record<string, AddrState> = {};
-      addresses.forEach((a) => (next[a] = "pending"));
-      return next;
-    });
+  setAcctStats([]);
+  setAcctStatErrors([]);
+  setAcctStatStatus(() => {
+    const next: Record<string, AddrState> = {};
+    addresses.forEach((a) => (next[a] = "pending"));
+    return next;
+  });
+  // 初始化标签查询状态为 pending（独立统计）
+  setOklinkStatus(() => {
+    const s: Record<string, AddrState> = {};
+    addresses.forEach((a) => (s[a] = "pending"));
+    return s;
+  });
 
-    for (const a of addresses) {
-      if (cancelRef.current.cancelled) break;
+  for (const a of addresses) {
+    if (cancelRef.current.cancelled) break;
+    try {
+      setAcctStatStatus((prev) => ({ ...prev, [a]: "running" as AddrState }));
+      const base = await fetchUsdtAccountStat(a);
+
+      let ok: any = null;
       try {
-        setAcctStatStatus((prev) => ({ ...prev, [a]: "running" }));
-        const base = await fetchUsdtAccountStat(a);
-
-        let ok: any = null;
-        try {
-          ok = await withOklinkQueue(() => fetchOklinkSummarySafe(a, "zh-hans"));
-        } catch { ok = null; }
-
-        const merged: AccountStatRow = { ...base, ...buildOklinkFields(ok) };
-
-        setAcctStats((prev) => [...prev.filter((x) => x.地址 !== a), merged]);
-        setAcctStatStatus((prev) => ({ ...prev, [a]: "done" }));
-      } catch (e: any) {
-        setAcctStatErrors((es) => [...es, { address: a, message: e?.message || "未知错误" }]);
-        setAcctStatStatus((prev) => ({ ...prev, [a]: "error" as AddrState }));
+        setOklinkStatus((prev) => ({ ...prev, [a]: "running" as AddrState }));
+        ok = await withOklinkQueue(() => fetchOklinkSummarySafe(a, "zh-hans"));
+        setOklinkStatus((prev) => ({ ...prev, [a]: "done" as AddrState }));
+      } catch {
+        ok = null;
+        setOklinkStatus((prev) => ({ ...prev, [a]: "error" as AddrState }));
       }
 
-      await sleepRandom(1000, 2000);
+      const merged: AccountStatRow = { ...base, ...buildOklinkFields(ok) };
+
+      setAcctStats((prev) => [...prev.filter((x) => x.地址 !== a), merged]);
+      setAcctStatStatus((prev) => ({ ...prev, [a]: "done" as AddrState }));
+    } catch (e) {
+      const err = e as any;
+      setAcctStatErrors((es) => [...es, { address: a, message: err?.message || "未知错误" }]);
+      setAcctStatStatus((prev) => ({ ...prev, [a]: "error" as AddrState }));
     }
 
-    setIsAcctRunning(false);
+    await sleepRandom(1000, 2000);
   }
+
+  setIsAcctRunning(false);
+}
+
 
   function clearAcctStats(): void {
     setAcctStats([]);
     setAcctStatErrors([]);
     setAcctStatStatus({});
+    setOklinkStatus({});
+    setOklinkPending(0);
   }
   function downloadAcctExcel(): void {
     const wb = XLSX.utils.book_new();
@@ -1781,7 +1835,7 @@ export default function TronView() {
             </CardHeader>
             <CardContent className="space-y-3">
               <div className="flex flex-wrap gap-3">
-                {!isAcctRunning ? (
+                {!(isAcctRunning || oklinkPending > 0) ? (
                   <Button
                     className="rounded-2xl bg-gradient-to-r from-indigo-600 to-fuchsia-600 text-white hover:from-indigo-500 hover:to-fuchsia-500"
                     disabled={!addresses.length}
@@ -1795,7 +1849,7 @@ export default function TronView() {
                   <Button
                     className="rounded-2xl bg-neutral-900 text-white hover:bg-neutral-800"
                     onClick={stopAll}
-                    title="终止任务（与上方停止共享同一取消标志）"
+                    title={`终止任务（与上方停止共享同一取消标志）${oklinkPending > 0 ? " · 正在补全标签…" : ""}`}
                   >
                     <Square className="mr-2 h-4 w-4" />
                     停止
@@ -1815,11 +1869,12 @@ export default function TronView() {
                 </Button>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-4">
                 <Stat label="账户统计条数" value={acctStats.length} />
-                <Stat label="正在统计" value={Object.values(acctStatStatus).filter((s) => s === "running").length} />
+                <Stat label="正在统计" value={acctRunningCount} />
                 <Stat label="已完成" value={Object.values(acctStatStatus).filter((s) => s === "done").length} />
                 <Stat label="错误" value={acctStatErrors.length} />
+                <Stat label="标签查询" value={`${oklinkDoneCount}/${addresses.length}`} />
               </div>
 
               <div className="overflow-auto max-h-[520px] rounded-2xl border">

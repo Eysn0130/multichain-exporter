@@ -1,6 +1,10 @@
 // src/oklink.ts
 // 说明：纯前端解析 OKLink 地址页与 token-transfer 子页中内嵌的 appState JSON。
-// 要求：vite 代理里有 /oklink -> https://www.oklink.com （changeOrigin: true, secure: false）
+// 使用方式：
+// - 开发环境（vite dev）：不配 env 时默认走 /oklink，需在 vite 代理里将 /oklink -> https://www.oklink.com
+// - 生产环境（GitHub Pages 等）：在 .env.production 设置
+//     VITE_OKLINK_BASE=https://ok-proxy.<your-subdomain>.workers.dev/oklink
+//   让前端去请求你部署的 Cloudflare Worker 转发器。
 
 export type OklinkSummary = {
   address: string | null;
@@ -26,16 +30,23 @@ export type OklinkSummary = {
   last_tx_hash: string | null;
 };
 
+// —— 统一请求前缀 ——
+// 开发：默认 "/oklink"（配合 Vite 代理）
+// 生产：读取 .env.production 中的 VITE_OKLINK_BASE（例如 https://ok-proxy.xxx.workers.dev/oklink）
+const BASE = (import.meta.env.VITE_OKLINK_BASE ?? "/oklink").replace(/\/$/, "");
+
 function normTagList(items: any): string[] {
   if (!Array.isArray(items)) return [];
   return items
-    .map((it) => (typeof it === "string" ? it : (it?.text || it?.name || it?.label || "")))
+    .map((it) =>
+      typeof it === "string" ? it : (it?.text || it?.name || it?.label || "")
+    )
     .filter(Boolean);
 }
 
 async function fetchHtml(path: string): Promise<string> {
   const sep = path.includes("?") ? "&" : "?";
-  const url = `/oklink${path}${sep}_ts=${Date.now()}`;
+  const url = `${BASE}${path}${sep}_ts=${Date.now()}`;
   const res = await fetch(url, { cache: "no-store" });
   if (!res.ok) throw new Error(`OKLink fetch failed: ${res.status}`);
   return res.text();
@@ -43,12 +54,17 @@ async function fetchHtml(path: string): Promise<string> {
 
 function parseAppState(html: string): any {
   const doc = new DOMParser().parseFromString(html, "text/html");
-  const el = doc.querySelector<HTMLScriptElement>('script#appState[type="application/json"]');
+  const el = doc.querySelector<HTMLScriptElement>(
+    'script#appState[type="application/json"]'
+  );
   if (!el || !el.textContent) throw new Error("OKLink appState not found");
   return JSON.parse(el.textContent);
 }
 
-async function fetchMainState(address: string, lang: "" | "zh-hans" = "zh-hans"): Promise<any> {
+async function fetchMainState(
+  address: string,
+  lang: "" | "zh-hans" = "zh-hans"
+): Promise<any> {
   try {
     const html = await fetchHtml(`/${lang}/tron/address/${address}`);
     return parseAppState(html);
@@ -59,7 +75,10 @@ async function fetchMainState(address: string, lang: "" | "zh-hans" = "zh-hans")
   }
 }
 
-async function fetchTokenState(address: string, lang: "" | "zh-hans" = "zh-hans"): Promise<any> {
+async function fetchTokenState(
+  address: string,
+  lang: "" | "zh-hans" = "zh-hans"
+): Promise<any> {
   try {
     const html = await fetchHtml(`/${lang}/tron/address/${address}/token-transfer`);
     return parseAppState(html);
@@ -70,7 +89,10 @@ async function fetchTokenState(address: string, lang: "" | "zh-hans" = "zh-hans"
   }
 }
 
-export async function fetchSlimSummary(address: string, lang: "" | "zh-hans" = "zh-hans"): Promise<OklinkSummary> {
+export async function fetchSlimSummary(
+  address: string,
+  lang: "" | "zh-hans" = "zh-hans"
+): Promise<OklinkSummary> {
   const [main, token] = await Promise.all([
     fetchMainState(address, lang),
     fetchTokenState(address, lang),

@@ -560,8 +560,8 @@ export default function TronView() {
           rowsOut.push({
             地址: addr,
             哈希: id,
-            转入地址: from,
-            转出地址: to,
+            发起地址: from,
+            接收地址: to,
             数量: scaleAmount(rawVal, dec),
             代币: symbol,
             时间: formatTime(ts),
@@ -1979,8 +1979,8 @@ async function runAcctStats(): Promise<void> {
                         <tr>
                           <th className="text-center p-2 whitespace-nowrap">地址</th>
                           <th className="text-center p-2 whitespace-nowrap w-[200px]">哈希</th>
-                          <th className="text-center p-2 whitespace-nowrap">转入地址</th>
-                          <th className="text-center p-2 whitespace-nowrap">转出地址</th>
+                          <th className="text-center p-2 whitespace-nowrap">发起地址</th>
+                          <th className="text-center p-2 whitespace-nowrap">接收地址</th>
                           <th className="text-center p-2 whitespace-nowrap">数量</th>
                           <th className="text-center p-2 whitespace-nowrap">代币</th>
                           <th className="text-center p-2 whitespace-nowrap w-[140px]">时间</th>
@@ -1991,8 +1991,8 @@ async function runAcctStats(): Promise<void> {
                           <tr key={i} className="border-b last:border-none">
                             <td className="p-2 font-mono text-xs break-all">{r.地址}</td>
                             <td className="p-2 font-mono text-xs break-all w-[200px]">{r.哈希}</td>
-                            <td className="p-2 font-mono text-xs break-all">{r.转入地址}</td>
-                            <td className="p-2 font-mono text-xs break-all">{r.转出地址}</td>
+                            <td className="p-2 font-mono text-xs break-all">{r.发起地址}</td>
+                            <td className="p-2 font-mono text-xs break-all">{r.接收地址}</td>
                             <td className="p-2">{formatHumanAmount2(r.数量)}</td>
                             <td className="p-2">{r.代币}</td>
                             <td className="p-2 w-[140px]"><TimeCell value={r.时间} /></td>

@@ -1,4 +1,4 @@
-name: Sync lockfile
+name: Sync lockfile (create PR)
 
 on:
   workflow_dispatch:
@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   lockfile:
@@ -18,15 +19,18 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 22   # 或 20，均可
 
-      # 生成/同步 package-lock.json
-      - name: Install deps (generate lockfile)
+      - name: Generate lockfile
         run: npm install --no-audit --no-fund
 
-      # 仅当 lockfile 变更时提交
-      - name: Commit lockfile if changed
-        uses: stefanzweifel/git-auto-commit-action@v5
+      # 用 PR 的方式提交变更，兼容分支保护
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v6
         with:
-          commit_message: "chore: sync package-lock.json for Cloudflare Pages"
-          file_pattern: "package-lock.json"
+          commit-message: "chore: sync package-lock.json for Cloudflare Pages"
+          title: "chore: sync package-lock.json"
+          body: "Auto-generated lockfile to fix Cloudflare Pages `npm ci`."
+          branch: chore/sync-lockfile
+          add-paths: |
+            package-lock.json

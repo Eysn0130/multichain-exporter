@@ -424,23 +424,81 @@ export default function TronView() {
     clearAcctStats();
   }
 
+  // ==== 常量（放在文件顶层工具附近）====
+  const EXCEL_MAX_ROWS = 1_048_576;           // Excel 单表行数上限
+  const EXCEL_SAFE_ROWS = 900_000;            // 预留安全余量，避免边界风险
+  const CSV_CHUNK_ROWS  = 200_000;            // CSV 文件分片行数（可按需调大/调小）
+
+  function chunk<T>(arr: T[], size: number): T[][] {
+    if (size <= 0) return [arr];
+    const out: T[][] = [];
+    for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+    return out;
+  }
+  function tsTag(prefix: string) {
+    return `${prefix}_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}`;
+  }
+
+  // ==== 智能 Excel：按行数自动分片到多个 Sheet/多个工作簿 ====
   function downloadExcel(): void {
+    if (rows.length === 0 && txRows.length === 0) return;
+
+    // Transfers 分片
+    const transfersChunks = chunk(rows, EXCEL_SAFE_ROWS);
+    // Transactions 分片
+    const txChunks = chunk(txRows, EXCEL_SAFE_ROWS);
+
+    // 一个工作簿装不下时，拆多个工作簿（避免打开过慢/内存爆）
+    // 规则：每个工作簿最多放 6 个 Sheet（你也可调小）
+    const MAX_SHEETS_PER_WB = 6;
+    let wbIndex = 0;
+
+    for (let i = 0; i < Math.max(transfersChunks.length, txChunks.length); i += MAX_SHEETS_PER_WB) {
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), "转账Transfers");
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(txRows), "交易Transactions");
-    XLSX.writeFile(wb, `TRON_查询结果_${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.xlsx`);
+    const sliceT = transfersChunks.slice(i, i + MAX_SHEETS_PER_WB);
+    const sliceX = txChunks.slice(i, i + MAX_SHEETS_PER_WB);
+
+    sliceT.forEach((part, idx) => {
+      const ws = XLSX.utils.json_to_sheet(part);
+      XLSX.utils.book_append_sheet(wb, ws, `Transfers_${i + idx + 1}`);
+    });
+    sliceX.forEach((part, idx) => {
+      const ws = XLSX.utils.json_to_sheet(part);
+      XLSX.utils.book_append_sheet(wb, ws, `Transactions_${i + idx + 1}`);
+    });
+
+    wbIndex += 1;
+    const name = tsTag(`TRON_查询结果_Part${wbIndex}`);
+    // 关闭字符串共享表，减少内存；打开压缩
+    XLSX.writeFile(wb, `${name}.xlsx`, { bookSST: false, compression: true });
+    }
   }
+
+  // ==== CSV 分片：每 20 万行一个 CSV，分别下载（浏览器零依赖）====
   function downloadCSV(): void {
-    const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
-    const ws1 = XLSX.utils.json_to_sheet(rows);
-    const ws2 = XLSX.utils.json_to_sheet(txRows);
-    const blob1 = new Blob([XLSX.utils.sheet_to_csv(ws1)], { type: "text/csv;charset=utf-8;" });
-    const blob2 = new Blob([XLSX.utils.sheet_to_csv(ws2)], { type: "text/csv;charset=utf-8;" });
-    const a1 = document.createElement("a");
-    a1.href = URL.createObjectURL(blob1); a1.download = `TRON_查询结果_转账Transfers_${ts}.csv`; a1.click(); URL.revokeObjectURL(a1.href);
-    const a2 = document.createElement("a");
-    a2.href = URL.createObjectURL(blob2); a2.download = `TRON_查询结果_交易Transactions_${ts}.csv`; a2.click(); URL.revokeObjectURL(a2.href);
+    if (rows.length === 0 && txRows.length === 0) return;
+
+    const tTag = tsTag("TRON_查询结果");
+
+    const exportOne = (data: any[], base: string) => {
+    if (!data.length) return;
+    const parts = chunk(data, CSV_CHUNK_ROWS);
+    parts.forEach((part, idx) => {
+      const ws = XLSX.utils.json_to_sheet(part);
+      const csv = XLSX.utils.sheet_to_csv(ws);
+      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${tTag}_${base}_p${idx + 1}.csv`;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    });
+    };
+
+    exportOne(rows, "Transfers");
+    exportOne(txRows, "Transactions");
   }
+
 
   // ========== TronGrid: TRC20 转账 ==========
   async function fetchTrc20ForAddress(addr: string): Promise<any[]> {

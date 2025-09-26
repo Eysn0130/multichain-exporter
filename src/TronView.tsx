@@ -275,6 +275,26 @@ export default function TronView() {
   const [addresses, setAddresses] = useState<string[]>([]);
   const [rows, setRows] = useState<any[]>([]);
   const [txRows, setTxRows] = useState<any[]>([]);
+  // === 导出进度状态（用于“正在下载中”提示与进度条） ===
+  const [exporting, setExporting] = useState<{
+    mode: "excel" | "csv";
+    label: string;
+    total: number;
+    done: number;
+  } | null>(null);
+
+  // UI 让路：把耗时循环切成步进，避免浏览器假死
+  const yieldUI = () => new Promise((res) => setTimeout(res, 0));
+
+  function startExport(mode: "excel" | "csv", label: string, total: number) {
+    setExporting({ mode, label, total, done: 0 });
+  }
+  function tickExport(delta = 1) {
+    setExporting((prev) => (prev ? { ...prev, done: Math.min(prev.total, prev.done + delta) } : prev));
+  }
+  function endExport() {
+    setExporting(null);
+  } 
   const [errors, setErrors] = useState<{ address: string; message: string }[]>([]);
   const [errorAlertVisible, setErrorAlertVisible] = useState(false);
   const errorTimerRef = useRef<number | null>(null);
@@ -427,7 +447,7 @@ export default function TronView() {
   // ==== 常量（放在文件顶层工具附近）====
   const EXCEL_MAX_ROWS = 1_048_576;           // Excel 单表行数上限
   const EXCEL_SAFE_ROWS = 900_000;            // 预留安全余量，避免边界风险
-  const CSV_CHUNK_ROWS  = 200_000;            // CSV 文件分片行数（可按需调大/调小）
+  const CSV_CHUNK_ROWS  = 500_000;            // CSV 文件分片行数（可按需调大/调小）
 
   function chunk<T>(arr: T[], size: number): T[][] {
     if (size <= 0) return [arr];
@@ -439,66 +459,89 @@ export default function TronView() {
     return `${prefix}_${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}`;
   }
 
-  // ==== 智能 Excel：按行数自动分片到多个 Sheet/多个工作簿 ====
-  function downloadExcel(): void {
+  // ==== 智能 Excel：按行数自动分片到多个 Sheet/多个工作簿 + 进度反馈 ====
+  async function downloadExcel(): Promise<void> {
     if (rows.length === 0 && txRows.length === 0) return;
 
-    // Transfers 分片
     const transfersChunks = chunk(rows, EXCEL_SAFE_ROWS);
-    // Transactions 分片
     const txChunks = chunk(txRows, EXCEL_SAFE_ROWS);
 
-    // 一个工作簿装不下时，拆多个工作簿（避免打开过慢/内存爆）
-    // 规则：每个工作簿最多放 6 个 Sheet（你也可调小）
-    const MAX_SHEETS_PER_WB = 6;
+    const MAX_SHEETS_PER_WB = 8;
+    const totalSheets = transfersChunks.length + txChunks.length;
+    // 以“生成 sheet”为步进，写文件时也算一步
+    const totalSteps =
+    totalSheets + Math.max(1, Math.ceil(Math.max(transfersChunks.length, txChunks.length) / MAX_SHEETS_PER_WB));
+
+    startExport("excel", "Transfers / Transactions", totalSteps);
+    try {
     let wbIndex = 0;
-
     for (let i = 0; i < Math.max(transfersChunks.length, txChunks.length); i += MAX_SHEETS_PER_WB) {
-    const wb = XLSX.utils.book_new();
-    const sliceT = transfersChunks.slice(i, i + MAX_SHEETS_PER_WB);
-    const sliceX = txChunks.slice(i, i + MAX_SHEETS_PER_WB);
+      const wb = XLSX.utils.book_new();
 
-    sliceT.forEach((part, idx) => {
+      const sliceT = transfersChunks.slice(i, i + MAX_SHEETS_PER_WB);
+      const sliceX = txChunks.slice(i, i + MAX_SHEETS_PER_WB);
+
+      // 逐个 sheet 转换，转换后立刻 tick，让 UI 有机会刷新
+      for (let idx = 0; idx < sliceT.length; idx++) {
+      const part = sliceT[idx];
       const ws = XLSX.utils.json_to_sheet(part);
       XLSX.utils.book_append_sheet(wb, ws, `Transfers_${i + idx + 1}`);
-    });
-    sliceX.forEach((part, idx) => {
+      tickExport(1);
+      await yieldUI();
+      }
+      for (let idx = 0; idx < sliceX.length; idx++) {
+      const part = sliceX[idx];
       const ws = XLSX.utils.json_to_sheet(part);
       XLSX.utils.book_append_sheet(wb, ws, `Transactions_${i + idx + 1}`);
-    });
+      tickExport(1);
+      await yieldUI();
+      }
 
-    wbIndex += 1;
-    const name = tsTag(`TRON_查询结果_Part${wbIndex}`);
-    // 关闭字符串共享表，减少内存；打开压缩
-    XLSX.writeFile(wb, `${name}.xlsx`, { bookSST: false, compression: true });
+      wbIndex += 1;
+      const name = tsTag(`TRON_查询结果_Part${wbIndex}`);
+      XLSX.writeFile(wb, `${name}.xlsx`, { bookSST: false, compression: true });
+      tickExport(1); // 写文件完成也记一步
+      await yieldUI();
+    }
+    } finally {
+    endExport();
     }
   }
 
-  // ==== CSV 分片：每 20 万行一个 CSV，分别下载（浏览器零依赖）====
-  function downloadCSV(): void {
+  // ==== CSV 分片导出：步进式生成 + 进度反馈（浏览器零依赖）====
+  async function downloadCSV(): Promise<void> {
     if (rows.length === 0 && txRows.length === 0) return;
 
+    const partsTransfers = chunk(rows, CSV_CHUNK_ROWS);
+    const partsTx = chunk(txRows, CSV_CHUNK_ROWS);
+    const totalParts = partsTransfers.length + partsTx.length;
+
+    startExport("csv", "Transfers / Transactions (CSV)", totalParts);
+    try {
     const tTag = tsTag("TRON_查询结果");
 
-    const exportOne = (data: any[], base: string) => {
-    if (!data.length) return;
-    const parts = chunk(data, CSV_CHUNK_ROWS);
-    parts.forEach((part, idx) => {
-      const ws = XLSX.utils.json_to_sheet(part);
+    const exportOne = async (parts: any[][], base: string) => {
+      for (let i = 0; i < parts.length; i++) {
+      const ws = XLSX.utils.json_to_sheet(parts[i]);
       const csv = XLSX.utils.sheet_to_csv(ws);
       const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
       const a = document.createElement("a");
       a.href = URL.createObjectURL(blob);
-      a.download = `${tTag}_${base}_p${idx + 1}.csv`;
+      a.download = `${tTag}_${base}_p${i + 1}.csv`;
       a.click();
       URL.revokeObjectURL(a.href);
-    });
+
+      tickExport(1);
+      await yieldUI(); // 让 UI 刷新，显示进度
+      }
     };
 
-    exportOne(rows, "Transfers");
-    exportOne(txRows, "Transactions");
+    await exportOne(partsTransfers, "Transfers");
+    await exportOne(partsTx, "Transactions");
+    } finally {
+    endExport();
+    }
   }
-
 
   // ========== TronGrid: TRC20 转账 ==========
   async function fetchTrc20ForAddress(addr: string): Promise<any[]> {
@@ -1753,8 +1796,8 @@ async function runAcctStats(): Promise<void> {
                 <Button
                   variant="outline"
                   className="rounded-2xl hover:ring-1 hover:ring-neutral-300"
-                  disabled={!(allDone && (rows.length > 0 || txRows.length > 0))}
-                  onClick={downloadExcel}
+                  disabled={exporting !== null || !(allDone && (rows.length > 0 || txRows.length > 0))}
+                  onClick={() => void downloadExcel()}
                 >
                   <Download className="mr-2 h-4 w-4" />
                   导出 Excel
@@ -1762,14 +1805,30 @@ async function runAcctStats(): Promise<void> {
                 <Button
                   variant="outline"
                   className="rounded-2xl hover:ring-1 hover:ring-neutral-300"
-                  disabled={!(allDone && (rows.length > 0 || txRows.length > 0))}
-                  onClick={downloadCSV}
+                  disabled={exporting !== null || !(allDone && (rows.length > 0 || txRows.length > 0))}
+                  onClick={() => void downloadCSV()}
                 >
                   <Download className="mr-2 h-4 w-4" />
                   导出 CSV（2个文件）
                 </Button>
               </div>
-
+				{exporting && (
+				  <div className="mt-3 rounded-xl border border-neutral-200/70 bg-white/80 p-3">
+					<div className="text-sm font-medium text-neutral-800">
+					  正在下载中：{exporting.label}
+					</div>
+					<div className="mt-2">
+					  <Progress
+						value={exporting.total ? Math.floor((exporting.done / exporting.total) * 100) : 0}
+						className="h-2"
+					  />
+					  <div className="mt-1 text-xs text-muted-foreground">
+						{Math.min(exporting.done, exporting.total)} / {exporting.total}（
+						{exporting.total ? Math.floor((exporting.done / exporting.total) * 100) : 0}%）
+					  </div>
+					</div>
+				  </div>
+				)}
               <div className="pt-2">
                 <ProgressBar value={finishedCount} running={runningCount} total={addresses.length} />
               </div>
